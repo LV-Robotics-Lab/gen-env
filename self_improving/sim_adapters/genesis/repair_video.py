@@ -90,6 +90,27 @@ def verify_video(path, count, fps):
     )
 
 
+def replay_timing(dt, fps=50):
+    """Name replay speed from recorded integration time without dropping samples."""
+    if not np.isfinite(dt) or dt <= 0 or not np.isfinite(fps) or fps <= 0:
+        raise ValueError("invalid replay timestep or frame rate")
+    speed = float(dt * fps)
+    slowdown = 1 / speed
+    if np.isclose(speed, 1.0, rtol=0, atol=1e-12):
+        name = "physics_replay_realtime.mp4"
+    elif speed < 1:
+        name = f"physics_replay_{slowdown:g}x_slow.mp4"
+    else:
+        name = f"physics_replay_{speed:g}x_fast.mp4"
+    return dict(filename=name, playback_speed=speed, slowdown_factor=slowdown)
+
+
+def save_frame(out, index, frame):
+    path = out / "frames" / f"frame_{index:04d}.png"
+    Image.fromarray(frame).save(path)
+    return dict(png_path=path.relative_to(out).as_posix(), png_sha256=lib.sha256(path))
+
+
 def render(data, trace, out, check, *, final=False, physics_passed=False):
     if final and not physics_passed:
         raise ValueError("final render requires passed physics")
@@ -101,7 +122,9 @@ def render(data, trace, out, check, *, final=False, physics_passed=False):
         raise ValueError("video input differs from frozen physical input")
     if final and not physics.evaluate(data, rows)["passed"]:
         raise ValueError("final render requires independently passed trace")
+    timing = replay_timing(data["settings"]["dt"])
     out.mkdir(parents=True, exist_ok=False)
+    (out / "frames").mkdir()
     gs = repair_assets.init_genesis()
     process = None
     report = dict(
@@ -169,7 +192,7 @@ def render(data, trace, out, check, *, final=False, physics_passed=False):
         check()
         selected = [rows[-1]] * 180 if final else rows
         fps = 30 if final else 50
-        path = out / ("orbit.mp4" if final else "physics_replay_10x_slow.mp4")
+        path = out / ("orbit.mp4" if final else timing["filename"])
         process = encode(path, fps)
         hashes = set()
         max_geometry_error = 0.0
@@ -207,6 +230,7 @@ def render(data, trace, out, check, *, final=False, physics_passed=False):
                 digest = hashlib.sha256(frame.tobytes()).hexdigest()
                 hashes.add(digest)
                 process.stdin.write(frame.tobytes())
+                saved = save_frame(out, i, frame)
                 ledger.write(
                     json.dumps(
                         dict(
@@ -214,6 +238,7 @@ def render(data, trace, out, check, *, final=False, physics_passed=False):
                             source_step=row["step"],
                             source_time_s=row["time_s"],
                             raw_rgb_sha256=digest,
+                            **saved,
                         )
                     )
                     + "\n"
@@ -224,11 +249,32 @@ def render(data, trace, out, check, *, final=False, physics_passed=False):
         if process.wait() != 0:
             raise RuntimeError("video encoder failed")
         process = None
+        if final:
+            final_images = []
+            for name, direction, up in (
+                ("overview", [0, -1, 0.8], [0, 0, 1]),
+                ("top", [0, 0, 1], [0, 1, 0]),
+                ("side", [1, -1, 0.35], [0, 0, 1]),
+            ):
+                direction = np.asarray(direction, dtype=float)
+                camera.set_pose(
+                    pos=(center + distance * direction / np.linalg.norm(direction)).tolist(),
+                    lookat=center.tolist(), up=up,
+                )
+                rgb, _, _, _ = camera.render(rgb=True, force_render=True)
+                picture = out / f"{name}.png"
+                Image.fromarray(np.asarray(rgb, dtype=np.uint8)).save(picture)
+                final_images.append(official.fingerprint(picture, out))
+            report["final_images"] = final_images
         report.update(
             verify_video(path, len(selected), fps),
             unique_raw_frames=len(hashes),
             maximum_visual_error_m=max_geometry_error,
-            playback_speed=None if final else data["settings"]["dt"] * fps,
+            playback_speed=None if final else timing["playback_speed"],
+            slowdown_factor=None if final else timing["slowdown_factor"],
+            saved_frame_count=len(selected),
+            frames_directory="frames",
+            physics_duration_s=rows[-1]["time_s"] - rows[0]["time_s"],
             status="passed",
         )
         check()

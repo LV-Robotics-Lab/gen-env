@@ -343,6 +343,20 @@ def sample_object(assets, poses, name, relations, preferences, seed, retry, exte
             entry.update(rejected=["empty_valid_region"])
             continue
         xy = uniform_polygon(region, rng)
+        requested = [p["region"] for p in preferences if p.get("object_id") == name
+                     and p.get("region") in spatial.REGIONS] if retry < 5 else []
+        # Offer measured preferred positions explicitly before random fallback. Ranking
+        # random points alone cannot reliably place a requested object at the centre.
+        if requested and i < 10:
+            low, high = region.min(0), region.max(0)
+            preferred = (polygon.min(0) + polygon.max(0)) / 2
+            for region_name in requested:
+                if region_name != "center":
+                    axis = 0 if region_name in {"left", "right"} else 1
+                    fraction = 1 / 6 if region_name in {"left", "front"} else 5 / 6
+                    preferred[axis] = low[axis] + fraction * (high[axis] - low[axis])
+            if clearance(region, [preferred]) >= 0:
+                xy = preferred
         pose = dict(position=[*xy.tolist(), float(z)], orientation_wxyz=q)
         if parent != "ground":
             pose = dict(

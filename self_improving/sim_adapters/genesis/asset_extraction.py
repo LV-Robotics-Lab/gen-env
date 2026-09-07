@@ -121,6 +121,10 @@ def clean_objects(document, request):
                 raise ValueError('attribute missing from source or retrieval description')
         # Full noun phrase coverage, including prints/handles, instead of a color-only query.
         n, phrase = quantity(mentions[0])
+        if category == 'table':
+            # A support locative is not an asset attribute: 桌上 still retrieves 桌子.
+            # Retain all preceding descriptors; never strip colours/materials.
+            phrase = re.sub(r'(桌子|桌面|桌|台面)(?:上面|上方|上)$', r'\1', phrase)
         if phrase not in obj['description']:
             # Short support words can be expanded, e.g. 桌 -> 桌子. No attribute may disappear.
             raise ValueError('retrieval description dropped part of the source noun phrase')
@@ -145,6 +149,8 @@ def clean_objects(document, request):
         if not matches:
             continue
         q = matches[-1]
+        if q.start() and prefix[q.start() - 1] == '第':
+            continue  # Ordinal references identify an existing instance, not a new quantity.
         between = prefix[q.end():]
         nondecorative = re.sub(r'(?:印有|印着).*?(?:图案|印花)', '', between)
         decorative_noun = re.match(r'(?:图案|印花)', request[b:])
@@ -180,7 +186,8 @@ def clean_relations(document, request, objects):
         key = (row['relation'], row['source'], row['target'])
         if key in seen:
             raise ValueError('duplicate relation')
-        cues = {'on': r'上|\bon\b', 'inside': r'里|内|中|inside|into|contains|\bin\b',
+        cues = {'on': r'上|(?:桌子|桌面|桌|台面)(?:的)?(?:中间|中央|中心)|\bon\b',
+                'inside': r'里|内|中|inside|into|contains|\bin\b',
                 'left_of': r'左|left', 'right_of': r'右|right',
                 'in_front_of': r'前|front', 'behind': r'后|behind', 'near': r'旁|近|near|next',
                 'far_from': r'远|far|away'}
@@ -247,12 +254,40 @@ class AssetProvider:
                     strings(document['ambiguities'])
                     self.last_evidence['ambiguities'] = document['ambiguities']
                     raise ValueError('extraction is ambiguous')
+                def validate_stage(candidate):
+                    if stage == 'objects':
+                        return clean_objects(candidate, request)
+                    return clean_relations(candidate, request, objects)
+
+                try:
+                    cleaned = validate_stage(document)
+                except ValueError as validation_error:
+                    if cached is not None:
+                        raise
+                    # One bounded model correction; invalid evidence is never normalized
+                    # into acceptance. Keep the rejected response and rerun every gate.
+                    self.last_evidence['stages'][stage]['rejected_response'] = document
+                    self.last_evidence['stages'][stage]['validation_error'] = str(validation_error)
+                    correction = dict(user, validation_error=str(validation_error),
+                                      rejected_response=document,
+                                      instruction='Correct the validation error. Keep exact source '
+                                      'substrings; put the complete introductory quantity phrase '
+                                      'first in mentions. Do not invent synonyms absent from request.')
+                    self.last_evidence['calls'] += 1
+                    raw = self.send(self.prompts[stage], json.dumps(correction, ensure_ascii=False))
+                    if not isinstance(raw, str) or self.config.api_key in raw:
+                        raise ValueError('invalid correction response')
+                    self.last_evidence['stages'][stage]['correction_response'] = raw
+                    document = transport._strict_json_loads(raw)
+                    if isinstance(document, dict) and document.get('ambiguities'):
+                        raise ValueError('extraction is ambiguous')
+                    cleaned = validate_stage(document)
                 if stage == 'objects':
-                    objects = clean_objects(document, request)
+                    objects = cleaned
                     if on_objects:
                         on_objects(objects)
                 else:
-                    relations = clean_relations(document, request, objects)
+                    relations = cleaned
                 payload[stage] = document
                 self.last_evidence['stages'][stage]['validation'] = 'passed'
             if cached is None:

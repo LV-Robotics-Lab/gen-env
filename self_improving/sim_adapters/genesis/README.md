@@ -2,6 +2,34 @@
 
 SimFoundry 重建物体现可导入为自包含 URDF 包，并与官方库联合检索；选中后执行单资产落体验证，失败报错且保留候选。见 [标准资产接入指南](SIMFOUNDRY_ASSETS.md)。
 
+已有重建场景还可保留完整位姿导入 v2 场景图，并在 Genesis 中核验、预览及独立运行物理诊断，见 [场景图转换指南](SIMFOUNDRY_SCENES.md)。
+## 单图/视频统一重建
+
+`reconstruct_media` 把单图或视频统一送入 SimFoundry，随后导入前景资产、从现有
+Genesis 六视图索引检索有限桌面资产、构建 `support_0`、运行最多四次真实物理尝试，
+且仅在物理通过后写入 `04_final_render`：
+
+```bash
+.venv/bin/python -m self_improving.sim_adapters.genesis.reconstruct_media \
+  --image test/鼠标.jpg --name 鼠标_单图 --output-root output \
+  --clip-index assets/genesis/clip_non_robot_v1/index.json \
+  --vlm-config configs/llm.yaml
+
+.venv/bin/python -m self_improving.sim_adapters.genesis.reconstruct_media \
+  --video test/鼠标视频.mp4 --name 鼠标_视频 --output-root output \
+  --clip-index assets/genesis/clip_non_robot_v1/index.json \
+  --vlm-config configs/llm.yaml
+```
+
+两种输入严格互斥。已有任务只有在 `--resume` 且任务名、输入 SHA-256、模式和有效配置
+完全一致时才继续。退出码 0 表示物理及渲染通过，1 表示输入/依赖/模型/转换错误，
+2 表示修复后物理仍失败，3 表示稳定但声明关系未验证。旧 SimFoundry
+`run.sh reconstruct --video-fpath` 仍可用，但不会自动进入 Genesis 四阶段。
+支撑观测、单图推断边界及本机鼠标媒体运行状态见
+[统一重建验收](MEDIA_RECONSTRUCTION_EVIDENCE.md)。
+
+
+
 `output/` 只保存按输入命名的任务目录。共享资产、预览和索引位于 `assets/genesis/`；
 缓存、按需下载的 CLIP 权重及任务锁位于 `.cache/genesis/`；历史验收位于
 `data/genesis_history/`。旧证据中的明确资产路径由适配层读取时映射，JSON 字节和哈希保持不变。

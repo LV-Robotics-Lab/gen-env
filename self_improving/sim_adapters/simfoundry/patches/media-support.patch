@@ -1,0 +1,106 @@
+diff --git a/scripts/pipeline/A_reconstruction/run.sh b/scripts/pipeline/A_reconstruction/run.sh
+index 66f431e..64e320e 100755
+--- a/scripts/pipeline/A_reconstruction/run.sh
++++ b/scripts/pipeline/A_reconstruction/run.sh
+@@ -293,0 +294,15 @@ fi
++hydra_scalar() {
++  local value="$1"
++  if [[ "${value}" == *$'\n'* || "${value}" == *$'\r'* ]]; then
++    echo "Hydra override values cannot contain newlines." >&2
++    return 2
++  fi
++  if [[ "${value}" =~ ^[A-Za-z0-9_./:=-]+$ ]]; then
++    printf '%s' "${value}"
++    return
++  fi
++  value="${value//\\/\\\\}"
++  value="${value//\'/\\\'}"
++  printf "'%s'" "${value}"
++}
++
+@@ -295,2 +310,2 @@ CMD+=(
+-  "root_dir=${ROOT_DIR}"
+-  "scene_name=${SCENE_NAME}"
++  "root_dir=$(hydra_scalar "${ROOT_DIR}")"
++  "scene_name=$(hydra_scalar "${SCENE_NAME}")"
+@@ -300 +315 @@ if [[ "${INPUT_MODE}" == "video" ]]; then
+-  CMD+=("s1_video.video_fpath=${VIDEO_FPATH}")
++  CMD+=("s1_video.video_fpath=$(hydra_scalar "${VIDEO_FPATH}")")
+diff --git a/scripts/pipeline/A_reconstruction/stages/3_segment_ground_plane.py b/scripts/pipeline/A_reconstruction/stages/3_segment_ground_plane.py
+index 7f9cbc8..2b98295 100644
+--- a/scripts/pipeline/A_reconstruction/stages/3_segment_ground_plane.py
++++ b/scripts/pipeline/A_reconstruction/stages/3_segment_ground_plane.py
+@@ -343,0 +344,12 @@ def main(cfg):
++        "support_mask": "support_mask.png",
++        "support_observation": "support_observation.npz",
++        "mask_pixels": int(np.count_nonzero(floor_mask)),
++        "plane_inlier_pixels": int(len(inliers)),
++        "plane_inlier_ratio": float(len(inliers) / max(len(pts), 1)),
++        "image_size_hw": [int(floor_mask.shape[0]), int(floor_mask.shape[1])],
++        "boundary_censored": {
++            "top": bool(np.any(floor_mask[0])),
++            "bottom": bool(np.any(floor_mask[-1])),
++            "left": bool(np.any(floor_mask[:, 0])),
++            "right": bool(np.any(floor_mask[:, -1])),
++        },
+@@ -345,0 +358,15 @@ def main(cfg):
++    # Persist the finite support observation needed by downstream simulators. The
++    # legacy floor_info fields remain unchanged for existing OmniGibson consumers.
++    Image.fromarray((floor_mask.astype(np.uint8) * 255)).save(
++        f"{out_dir}/support_mask.png"
++    )
++    np.savez_compressed(
++        f"{out_dir}/support_observation.npz",
++        rgb=rgb.astype(np.uint8),
++        depth=np.asarray(depth, dtype=np.float32),
++        intrinsics=np.asarray(K, dtype=np.float64),
++        mask=floor_mask.astype(np.uint8),
++        points_camera=np.asarray(pts, dtype=np.float32),
++        plane_inlier_indices=np.asarray(inliers, dtype=np.int64),
++    )
++
+diff --git a/tests/test_run_all_wrapper.py b/tests/test_run_all_wrapper.py
+index ed5a294..92a546c 100644
+--- a/tests/test_run_all_wrapper.py
++++ b/tests/test_run_all_wrapper.py
+@@ -94,0 +95,40 @@ def test_run_all_forwards_nerfstudio_environment(tmp_path):
++
++
++def test_run_all_quotes_unicode_hydra_paths(tmp_path):
++    repo_root = Path(__file__).resolve().parents[1]
++    probe = tmp_path / "probe_python"
++    probe.write_text(
++        "#!/usr/bin/env bash\n"
++        "printf '%s\\n' \"$@\"\n",
++        encoding="utf-8",
++    )
++    probe.chmod(0o755)
++    output_root = tmp_path / "鼠标_单图"
++    video = output_root / "输入.png"
++
++    result = subprocess.run(
++        [
++            str(repo_root / "scripts" / "pipeline" / "A_reconstruction" / "run.sh"),
++            "--python-bin",
++            str(probe),
++            "--exec-mode",
++            "direct",
++            "--no-stream",
++            "--include",
++            "1b",
++            "--root-dir",
++            str(output_root),
++            "--scene-name",
++            "重建",
++            "--video-fpath",
++            str(video),
++        ],
++        cwd=repo_root,
++        check=True,
++        capture_output=True,
++        text=True,
++    )
++    forwarded = result.stdout.splitlines()
++    assert f"root_dir='{output_root}'" in forwarded
++    assert "scene_name='重建'" in forwarded
++    assert f"s1_video.video_fpath='{video}'" in forwarded

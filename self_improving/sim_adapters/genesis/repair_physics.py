@@ -14,6 +14,7 @@ from self_improving.sim_adapters.genesis import build_official_index as official
 from self_improving.sim_adapters.genesis import clip_select as clip
 from self_improving.sim_adapters.genesis import repair_assets
 from self_improving.sim_adapters.genesis import repair_geometry as geo
+from self_improving.sim_adapters.genesis import repair_numerics as numerics
 from self_improving.sim_adapters.genesis import scene_layout as spatial
 from self_improving.sim_adapters.genesis import validate_asset_scene as native
 from self_improving.sim_adapters.genesis.physics_math import angle, rotation
@@ -51,9 +52,10 @@ SETTINGS = dict(
 
 GT75_PROFILE = "text_repair_gt75_v1"
 PROFILES = (geo.PROFILE, GT75_PROFILE)
+NUMERICS_PROFILES = numerics.PROFILES
 
 
-def settings(profile=geo.PROFILE):
+def settings(profile=geo.PROFILE, numerics_profile="legacy"):
     """Separate user-requested acceptance criteria from the original frozen baseline."""
     if profile not in PROFILES:
         raise ValueError("unknown physics profile")
@@ -61,7 +63,28 @@ def settings(profile=geo.PROFILE):
     if profile == GT75_PROFILE:
         cfg.update(profile=profile, stable_fraction=0.75, support_fraction=0.75,
                    fraction_comparison="strictly_greater")
+    cfg.update(numerics.configuration(numerics_profile))
     return cfg
+
+
+def validate_settings(data):
+    """Keep v1 bytes valid while binding all new controls in a versioned input."""
+    numerical = data.get("numerics_profile", "legacy")
+    preset = data.get("repair_preset", "legacy")
+    schema = data.get("schema_version")
+    if preset not in numerics.REPAIR_PRESETS:
+        raise ValueError("unknown repair preset")
+    if schema == "genenv.text_repair_input.v1":
+        if "numerics_profile" in data or "repair_preset" in data:
+            raise ValueError("version 1 input cannot contain new profile fields")
+    elif schema == "genenv.text_repair_input.v2":
+        if "numerics_profile" not in data or "repair_preset" not in data:
+            raise ValueError("version 2 input requires frozen numerical and repair profiles")
+    else:
+        raise ValueError("unknown text repair input schema")
+    if data["settings"] != settings(data.get("profile"), numerical):
+        raise ValueError("frozen profile settings mismatch")
+    return data["settings"]
 
 
 def fraction_passes(value, cfg, key):
@@ -90,9 +113,7 @@ def penetration_ok(contact, assets):
 
 
 def evaluate(data, rows, *, initial_rejected=False):
-    assets, cfg = data["assets"], data["settings"]
-    if cfg != settings(data.get("profile")):
-        raise ValueError("frozen profile settings mismatch")
+    assets, cfg = data["assets"], validate_settings(data)
     if not assets or set(data["poses"]) != set(assets):
         raise ValueError("invalid frozen object set")
     geo.topology(assets)
@@ -110,6 +131,10 @@ def evaluate(data, rows, *, initial_rejected=False):
                     or angle(state["orientation_wxyz"], data["poses"][n]["orientation_wxyz"]) > 1e-4
                 ):
                     raise ValueError("initial pose differs from frozen input")
+    capacity = (
+        numerics.validate_capacity_rows(cfg, rows)
+        if data.get("numerics_profile", "legacy") != "legacy" else None
+    )
     if initial_rejected and all(penetration_ok(c, assets) for c in rows[0]["contacts"]):
         raise ValueError("initial rejection without excessive penetration")
     window = [r for r in rows if r["time_s"] > cfg["window_start_s"] + 1e-9]
@@ -221,7 +246,7 @@ def evaluate(data, rows, *, initial_rejected=False):
                 break
     dynamic = [n for n, a in assets.items() if not a["fixed"]]
     passed = not any(failures.values()) and not initial_rejected
-    return dict(
+    result = dict(
         profile=data["profile"],
         passed=passed,
         failures=failures,
@@ -238,6 +263,15 @@ def evaluate(data, rows, *, initial_rejected=False):
         ),
         penetration_ratio=sum("penetration" in f for f in failures.values()) / len(assets),
     )
+    if data["schema_version"] == "genenv.text_repair_input.v2":
+        result.update(
+            numerics_profile=data["numerics_profile"],
+            repair_preset=data["repair_preset"],
+            diagnostics=numerics.diagnostics(data, rows),
+        )
+        if capacity is not None:
+            result["diagnostics"]["collision_capacity"] = capacity
+    return result
 
 
 def apply_pose(entity, asset, pose, reference):
@@ -250,8 +284,7 @@ def apply_pose(entity, asset, pose, reference):
 
 
 def simulate(data, out, check):
-    if data["settings"] != settings(data.get("profile")):
-        raise ValueError("frozen profile settings mismatch")
+    validate_settings(data)
     clip.write_json(out / "visual_initial_report.json", repair_assets.verify_visual_input(data))
     check()
     gs = repair_assets.init_genesis()
@@ -259,6 +292,16 @@ def simulate(data, out, check):
     rows, loaded = [], {}
     executed = 0
     report = dict(status="loading", profile=data["profile"], bodies=loaded, cameras_created=0)
+    numerical = data.get("numerics_profile", "legacy") != "legacy"
+    capacity = {}
+    if numerical:
+        capacity = dict(max_collision_pairs=cfg["max_collision_pairs"],
+                        max_contacts=cfg["max_contacts"])
+        report.update(
+            numerics_profile=data["numerics_profile"],
+            repair_preset=data["repair_preset"],
+            contact_capacity=dict(**capacity, maximum_observed_contacts=0, overflow=False),
+        )
     try:
         scene = gs.Scene(
             show_viewer=False,
@@ -275,6 +318,7 @@ def simulate(data, out, check):
                 friction_cone=gs.friction_cone.pyramidal,
                 contact_resolution=gs.contact_resolution.convex,
                 impratio=1.0,
+                **capacity,
             ),
         )
         entities = {"ground": scene.add_entity(gs.morphs.Plane(collision=True))}
@@ -297,6 +341,8 @@ def simulate(data, out, check):
             )
         scene.build()
         report["rigid_options"] = scene.rigid_solver._options.model_dump(mode="json")
+        if numerical:
+            report["contact_parameter_audit"] = numerics.apply_contact_parameters(entities, cfg)
         check()
         owners, links, references, masses = {}, {}, {}, {}
         for n, e in entities.items():
@@ -322,7 +368,17 @@ def simulate(data, out, check):
                 or np.linalg.eigvalsh(inertia).min() < -1e-10
             ):
                 raise ValueError(f"{n}: invalid mass/inertia")
+            # Inertia is invariant under rigid placement. Check in the loaded asset
+            # frame, avoiding a float32 world rotation and inverse rotation that can
+            # erase tiny off-diagonal components of nearly axisymmetric tensors.
+            loaded_inertia = None
+            if not a["fixed"]:
+                _, _, loaded_inertia = repair_assets.aggregate_inertia(
+                    e, 1, np.zeros(3), gs
+                )
             apply_pose(e, a, data["poses"][n], references[n])
+            if not np.array_equal(inertia, native.array(e.get_links_inertia()).reshape(-1, 3, 3)):
+                raise ValueError(f"{n}: rigid placement changed link inertia")
             collision_error = 0.0
             if len(e.geoms) != len(a["collision_hulls"]):
                 raise ValueError(f"{n}: collision part count changed")
@@ -339,8 +395,7 @@ def simulate(data, out, check):
             if not a["fixed"]:
                 mass, center, tensor = repair_assets.aggregate_inertia(e, 1, np.zeros(3), gs)
                 canonical_com = geo.inverse([center], data["poses"][n])[0]
-                axes = rotation(data["poses"][n]["orientation_wxyz"])
-                canonical_inertia = axes.T @ tensor @ axes
+                canonical_inertia = loaded_inertia
                 if not np.isclose(mass, a["mass_kg"], rtol=1e-5, atol=1e-9):
                     raise ValueError(f"{n}: frozen mass mismatch")
                 if "com_local_m" in a and not np.allclose(
@@ -352,7 +407,8 @@ def simulate(data, out, check):
                 ):
                     raise ValueError(f"{n}: frozen inertia mismatch")
                 consistency = dict(
-                    passed=True, canonical_com_m=canonical_com.tolist(),
+                    passed=True, inertia_check_frame="loaded_asset_before_rigid_placement",
+                    canonical_com_m=canonical_com.tolist(),
                     canonical_inertia_kg_m2=canonical_inertia.tolist(),
                 )
             loaded[n] = dict(
@@ -378,6 +434,22 @@ def simulate(data, out, check):
         def snapshot(step):
             raw = scene.rigid_solver.collider.get_contacts(to_torch=False)
             contacts = native.contacts(raw, owners, links, initial=step == 0)
+            sample = None
+            if numerical:
+                sample = numerics.sample_capacity(scene.rigid_solver, cfg, contacts)
+                current = report["contact_capacity"]
+                current.update(
+                    telemetry_schema=numerics.CAPACITY_SCHEMA,
+                    requested=dict(max_collision_pairs=cfg["max_collision_pairs"],
+                                   max_contacts=cfg["max_contacts"]),
+                    effective=sample["limits"],
+                )
+                for metric, value in sample["usage"].items():
+                    key = "maximum_observed_" + metric
+                    current[key] = max(current.get(key, 0), value)
+                current["maximum_observed_contacts"] = current[
+                    "maximum_observed_postpruning_contacts"
+                ]
             objects = {}
             for n, e in entities.items():
                 state = native.pose(e)
@@ -443,6 +515,8 @@ def simulate(data, out, check):
                 contacts=contacts,
                 contact_phase="solved_step" if step else "initial_detection",
             )
+            if sample is not None:
+                row["collision_capacity"] = sample
             original.validate_row(row, step, dict(bodies=assets, settings=cfg))
             return row
 
@@ -466,6 +540,11 @@ def simulate(data, out, check):
         return evaluate(data, rows, initial_rejected=initial_rejected)
     except BaseException as exc:
         report.update(error=f"{type(exc).__name__}: {exc}")
+        if numerical:
+            report["status"] = "error"
+            report["contact_capacity"]["overflow"] = any(
+                term in str(exc).lower() for term in ("overflow", "exceeding max")
+            )
         raise
     finally:
         report.update(
@@ -482,13 +561,20 @@ def simulate(data, out, check):
         gs.destroy()
 
 
-def frozen_input(assets, poses, relations, seed, *, profile=geo.PROFILE):
-    return dict(
+def frozen_input(assets, poses, relations, seed, *, profile=geo.PROFILE,
+                 numerics_profile="legacy", repair_preset="legacy"):
+    if repair_preset not in numerics.REPAIR_PRESETS:
+        raise ValueError("unknown repair preset")
+    data = dict(
         schema_version="genenv.text_repair_input.v1",
         profile=profile,
-        settings=settings(profile),
+        settings=settings(profile, numerics_profile),
         assets=copy.deepcopy(assets),
         poses=copy.deepcopy(poses),
         relations=copy.deepcopy(relations),
         random_seed=seed,
     )
+    if numerics_profile != "legacy" or repair_preset != "legacy":
+        data.update(schema_version="genenv.text_repair_input.v2",
+                    numerics_profile=numerics_profile, repair_preset=repair_preset)
+    return data

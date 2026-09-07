@@ -1,5 +1,7 @@
 # SimFoundry 标准资产接入 Genesis
 
+整场景的位置、朝向和资产引用转换另见 [场景图接入指南](SIMFOUNDRY_SCENES.md)。
+
 本入口只迁移单刚体资产，不重建视频、不迁移原场景布局或机器人。输出是自包含 URDF
 资产包：URDF、视觉网格/纹理、碰撞网格、`physics.json` 和来源/文件哈希清单。
 Genesis 原生加载这些文件，不需要安装 SimFoundry、OmniGibson 或调用重建模型。

@@ -8,6 +8,8 @@
 
 ## 安装
 
+统一 Genesis 媒体入口依赖 [媒体接入补丁](patches/README.md)，新 checkout 初始化上游后先按该页应用；补丁保存中文路径转义和 stage 3 有限支撑观测输出。本机已修改的 checkout 无需重复应用。
+
 在仓库根目录运行。GPU 环境独立安装在 `.cache/simfoundry/miniforge`，
 不会替换原有 Miniconda 环境。完整上游说明见
 [README](../../../external/SimFoundry/README.md)、

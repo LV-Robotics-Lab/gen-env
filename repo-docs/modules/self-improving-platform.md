@@ -184,8 +184,35 @@ SimFoundry 单物体已有独立迁移入口：导入自包含 URDF 包，等价
 这项单资产预检不代表原视频整场景已迁移，也不替代组合场景或稳定核心物理验收。
 本机 7 个 Fruits 资产导入/预览/动态加载核验通过，7 项落体均完成但未通过既定物理阈值；
 具体命令和证据见 [标准资产接入指南](../../self_improving/sim_adapters/genesis/SIMFOUNDRY_ASSETS.md)。
-固定上游还实现了单图输入开关 `s1_video.single_image_input`，平台 CLI 可透传；
-当前仅核实源码支持，单图端到端尚未实测，参数见调用指南。
+整场景现在另有 `import_simfoundry_scene.py`：以 s14 保存状态为默认，绑定已有 URDF 库，
+输出 v2 图/布局及自包含资产包，保留根 link 世界位姿并将 XYZW 转为 WXYZ。
+源文件未提供明确支撑边时保留空边/未知支撑，不调用文本摆位求解器。机器人记入排除
+清单，不支持的缩放、关节或物理覆盖明确拒绝。Fruits 七物体真实 Genesis 动态加载、
+完整旋转网格与惯量核验和三视角预览通过，零物理步进；不代表原场景物理稳定。
+专用预览入口处理旋转及场景包相对路径，现有物理 TaskOutput 入口尚未接入。
+独立 `validate_imported_scene.py` 现直接读取转换包并从原始位姿运行 baseline 1000 步：
+逐步记录接触和通向地面的向上受力链，稳定性全通过也因关系未声明而保持 incomplete。
+Fruits 完整运行后 5 项稳定性检查通过、2 项失败（梨初态穿透 2.8128 mm，青色盘子
+终末角速度 0.05671 rad/s）；真实视频 101 帧/101 互异帧、终态三视角及独立轨迹复判
+已完成。输出在 `data/simfoundry_genesis/fruits_scene_physics_v1/`，没有修复或改阈值。
+命令、来源字段和边界见 [场景图转换指南](../../self_improving/sim_adapters/genesis/SIMFOUNDRY_SCENES.md)。
+
+统一媒体所需的上游中文路径转义与 stage 3 有限支撑输出改动，随主仓库保存在
+[SimFoundry 补丁](../../self_improving/sim_adapters/simfoundry/patches/README.md)。
+子模块仍固定上游 commit；新 checkout 运行前必须应用补丁，不能只初始化子模块就认为具备这些输出。
+
+统一 `reconstruct_media.py` 现接受互斥的单图/视频输入，并把 SimFoundry 前景、
+Genesis 支撑资产检索、有限 `support_0`、四轮以内物理修复和通过后渲染接入同一个
+四阶段 TaskOutput。单图固定一帧且禁用 Gaussian splat；视频报告全部解码/互异帧与
+15 个真实采样索引。stage 3 额外保存支撑 mask、深度、内参和 RANSAC 内点，平台结合
+stage 4 变换得到世界点及边界 censoring。支撑候选必须通过格式、哈希、单刚体碰撞和
+有限水平顶面门控，选择失败不回退无限平面。
+
+本机鼠标单图已真实运行到 stage 4，并识别 desk；视频已真实解码 124 帧、124 互异帧，
+但同机外部训练占用约 16.5 GiB 显存，分别阻塞后续 stage 5 和令 15 帧 DA3 OOM。
+由于未取得把这两份用户媒体发送到 Gemini 的明确外发授权，在线阶段没有启动。
+两个任务均保留可验证失败 manifest，03/04 未运行，不能称为物理通过。详情见
+[媒体重建验收](../../self_improving/sim_adapters/genesis/MEDIA_RECONSTRUCTION_EVIDENCE.md)。
 
 AgenticSim 名称有两种历史含义：旧产品仓库已经证明是 TacHarness 的稀疏历史状态，其唯一文件归档进 TacHarness 后本机副本已删除；`sim_adapters/agenticsim_runtime/` 只保留后来非 Git 工作区里的 Isaac 编排脚本，二者不能再混用。
 
@@ -220,6 +247,32 @@ Genesis 适配层的 `construct_asset_scene.py` 使用独立 `text_repair_v1`：
 用户另行确认的 `text_repair_gt75_v1` 将稳定速度达标比例与正确支撑比例改为
 严格大于 75%；最后 500 个采样至少 376 个达标。其余门控不变，原 95% 配置和历史
 失败证据保留。用新配置运行也必须逐对象全部通过才能接受，不能按场景总分替代。
+
+本轮文本修复新增显式 `text_scene_v2`，正式目标恢复为 `text_repair_v1` 的两项
+比例均 ≥95%。修复策略与 `numerics_profile` 独立冻结，旧 v1/75% 输入不被重新解释。
+真实对照保持同一杯子初态，对三种子比较时间步和实际接触参数，合格候选还须同初态
+半时间步复验。碰撞代理与原生质量、质心、惯量分开，替换代理不重新估算质量。
+新构建增加初态缓冲并区分准备、布局、执行和物理失败；纯接触抖动不继续盲目重采样。
+顺序视频保留每个采样 PNG，播放倍率随 dt 记录。具体实现、完整四资产的实际验收
+状态与限制见 [文本构建指南](../../self_improving/sim_adapters/genesis/TEXT_REPAIR_PLAN.md)
+和对应验收记录，不能用杯子隔离对照替代四资产通过。
+
+实测杯子隔离矩阵选中 `dt2ms_tau20ms_authored_v1`，三种子与 1 ms 半步对照通过；
+原碗四个固定 CoACD 候选因内壁表面误差被拒绝；用户随后允许扩展生成策略，
+独立 `collision_repair_v3` 的碗 304 部件分区已通过首次正式几何门；苹果复核
+触发内存上限，首次完整构建为准备失败、实际零步，
+四资产六次验收尚未完成。
+苹果简化拓扑清理与数值对照通过都不能替代四资产准备门；实际记录见
+[文本修复验收](../../self_improving/sim_adapters/genesis/TEXT_REPAIR_EVIDENCE.md)。
+
+只读对照本地 SimFoundry 后确认：s12 每步清零速度辅助摆放，编辑器 settle 主要判断
+始末位移；它们不能替代这里连续速度/正确支撑比例验收。整体凸包兜底也必须经过
+本入口原视觉误差及空腔门。坐标/惯量、真实碰撞地面和发布哈希约束的对照见文本指南。
+
+已有资产的五条自然语言组合实测暴露了三个独立边界：`on` 的原句证据检查要求
+“上”；“中间”等位置词只是软偏好，物理通过不能证明严格居中；碗分区几何通过后，
+实际加载仍可能因冻结惯量不一致而停止。左右初态的正确预览不能替代这一步。
+`inside` 仍是当前文本修复入口明确拒绝的关系。具体输入、图片与视频见文本验收记录。
 
 ### 输出、共享资源与缓存
 

@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from importlib.metadata import version
 from pathlib import Path
@@ -245,7 +246,10 @@ def proxy_quality(visual, parts, surface=None, *, fixed_native=False, native_sem
                 & np.all(boundary > bb[0] + 1e-7, axis=1)
                 & np.all(boundary < bb[1] - 1e-7, axis=1)
             )
-            for block in np.array_split(indices, max(1, math_ceil(len(indices) / 512))):
+            # Ray/triangle candidate expansion scales with the original face count.
+            # Bound memory without dropping any boundary sample or changing the gate.
+            contains_batch = min(512, max(1, 1_000_000 // max(1, len(solid.faces))))
+            for block in np.array_split(indices, max(1, math_ceil(len(indices) / contains_batch))):
                 if len(block):
                     buried[block] = solid.contains(boundary[block])
         outward = distance(visual, boundary[~buried])
@@ -520,24 +524,17 @@ def write_collision_model(parts, out, mass, com, inertia, *, fixed=False, contac
     body = ET.SubElement(world, "body", name="object")
     if not fixed:
         ET.SubElement(body, "freejoint")
+    # MuJoCo's fullinertia eigensolver may discard small off-diagonal terms.
+    # Export the principal frame explicitly so the frozen tensor survives loading.
+    principal, axes = np.linalg.eigh(np.asarray(inertia, dtype=float))
+    if not np.isfinite(principal).all() or principal.min() <= 0:
+        raise ValueError("invalid frozen inertia for export")
+    if np.linalg.det(axes) < 0:
+        axes[:, 0] *= -1
     ET.SubElement(
-        body,
-        "inertial",
-        pos=" ".join(map(str, com)),
-        mass=str(mass),
-        fullinertia=" ".join(
-            map(
-                str,
-                [
-                    inertia[0, 0],
-                    inertia[1, 1],
-                    inertia[2, 2],
-                    inertia[0, 1],
-                    inertia[0, 2],
-                    inertia[1, 2],
-                ],
-            )
-        ),
+        body, "inertial", pos=" ".join(map(str, com)), mass=str(mass),
+        diaginertia=" ".join(map(str, principal)),
+        quat=" ".join(map(str, geo.quat(axes))),
     )
     for i, part in enumerate(parts):
         path = out / f"collision_{i:03d}.obj"
@@ -563,7 +560,52 @@ def write_collision_model(parts, out, mass, com, inertia, *, fixed=False, contac
     return path
 
 
-def prepare(document, bindings, out, fixed, metadata, check):
+def select_mass_properties(source_is_mjcf, frozen, parts, diagonal, repair_preset):
+    """Keep v2 mass/COM/inertia tied to native loading, never to a repaired proxy."""
+    if source_is_mjcf or repair_preset == "text_scene_v2":
+        if frozen is None:
+            raise ValueError("native mass properties were not frozen before collision repair")
+        mass, com, inertia = frozen
+        source = (
+            "authored_mass_and_inertia_scaled_s3_s5" if source_is_mjcf
+            else "native_loaded_mass_and_inertia_scaled_s3_s5"
+        )
+        return mass, com, inertia, source
+    mass, com, inertia = proxy_inertia(parts, diagonal)
+    return mass, com, inertia, "collision_union_voxels_d_over_128_density_600_assumption"
+
+
+def prepare(document, bindings, out, fixed, metadata, check, *, repair_preset="legacy"):
+    if repair_preset not in {"legacy", "text_scene_v2"}:
+        raise ValueError("unknown collision repair preset")
+
+    asset_deadline = None
+
+    def check_asset():
+        if asset_deadline is not None and time.monotonic() >= asset_deadline:
+            raise ValueError("ASSET_PREPARATION_FAILED: total asset deadline exhausted")
+        check()
+        if asset_deadline is not None and time.monotonic() >= asset_deadline:
+            raise ValueError("ASSET_PREPARATION_FAILED: total asset deadline exhausted")
+
+    def native_quality(visual, parts, surface, target, **flags):
+        if repair_preset == "legacy":
+            return proxy_quality(visual, parts, surface, **flags)
+        from self_improving.sim_adapters.genesis import repair_collision_v2
+
+        return repair_collision_v2.native_quality(
+            visual, parts, surface, target, deadline=asset_deadline, check=check_asset, **flags
+        )
+
+    def choose_proxy(visual, surface, target, category):
+        if repair_preset == "legacy":
+            return decompose(visual, surface, target)
+        from self_improving.sim_adapters.genesis import repair_collision_v3
+
+        return repair_collision_v3.decompose(
+            visual, surface, target, category=category, check=check_asset, deadline=asset_deadline
+        )
+
     gs = init_genesis()
     output, failures = {}, {}
     try:
@@ -594,8 +636,14 @@ def prepare(document, bindings, out, fixed, metadata, check):
             binding = bindings[n]
             target = out / "assets" / n
             target.mkdir(parents=True)
+            asset_started = time.monotonic()
+            if repair_preset == "text_scene_v2":
+                from self_improving.sim_adapters.genesis import repair_collision_v2
+
+                asset_deadline = asset_started + repair_collision_v2.ASSET_BUDGET_S
             check()
             try:
+                check_asset()
                 vertices, faces = visible_geometry(entity, binding["model_entrypoint"])
                 if entity.n_dofs != 6:
                     raise ValueError(f"{n}: articulated or nonfree source unsupported")
@@ -636,52 +684,56 @@ def prepare(document, bindings, out, fixed, metadata, check):
                 source_is_mjcf = Path(binding["model_entrypoint"]).suffix == ".xml"
                 original_parts = parts
                 authored = source_is_mjcf
+                frozen_properties = None
                 if source_is_mjcf:
                     authored_mass, authored_com, authored_inertia, authored_contacts = (
                         authored_properties(entity, binding["model_entrypoint"], scale, anchor, gs)
                     )
+                    frozen_properties = (authored_mass, authored_com, authored_inertia)
+                elif repair_preset == "text_scene_v2":
+                    frozen_properties = aggregate_inertia(entity, scale, anchor, gs)
+                if repair_preset == "text_scene_v2":
+                    fm, fc, fi = frozen_properties
+                    clip.write_json(target / "native_mass_properties.json", dict(
+                        mass_kg=fm, com_local_m=fc.tolist(), inertia_local_kg_m2=fi.tolist(),
+                        origin="native load before any collision candidate", scale=scale,
+                    ))
                 fixed_native = n in fixed and not authored
                 print(f"checking native collision: {n}", flush=True)
                 if fixed_native:
                     collision = dict(
                         method="native_fixed_triangle_mesh",
                         parts=len(parts),
-                        quality=proxy_quality(visual, parts, surface, fixed_native=True),
+                        quality=native_quality(visual, parts, surface, target, fixed_native=True),
                     )
                     clip.write_json(target / "native_collision_report.json", collision)
                     if collision["quality"]["passed"]:
                         authored = True  # Preserve the native coordinate frame and source file.
                     else:
-                        parts, collision = decompose(visual, surface, target)
+                        parts, collision = choose_proxy(visual, surface, target, obj["category"])
                 elif authored and all(closed_convex(p) for p in parts):
                     collision = dict(
                         method="native_collision",
                         parts=len(parts),
-                        quality=proxy_quality(visual, parts, surface, native_semantics=True),
+                        quality=native_quality(
+                            visual, parts, surface, target, native_semantics=True
+                        ),
                     )
                     clip.write_json(target / "native_collision_report.json", collision)
                     print(f"native quality: {n}: {collision['quality']}", flush=True)
                     # Apply the same faithful geometry gate to authored decompositions.
                     if not collision["quality"]["passed"]:
-                        parts, collision = decompose(visual, surface, target)
+                        parts, collision = choose_proxy(visual, surface, target, obj["category"])
                         authored = False
                 else:
-                    parts, collision = decompose(visual, surface, target)
+                    parts, collision = choose_proxy(visual, surface, target, obj["category"])
                     authored = False
                 original_pose = native.pose(entity)
-                mass = float(native.array(entity.get_mass()).reshape(-1)[0]) * scale**3
                 physics_file = binding["model_entrypoint"]
-                mass_source = (
-                    "native_fixed_inertia_unused"
-                    if fixed_native and authored
-                    else "authored_mass_and_inertia_scaled_s3_s5"
-                )
                 contact_params = None
-                if source_is_mjcf:
-                    mass, com, inertia = authored_mass, authored_com, authored_inertia
-                else:
-                    mass, com, inertia = proxy_inertia(parts, diagonal)
-                    mass_source = "collision_union_voxels_d_over_128_density_600_assumption"
+                mass, com, inertia, mass_source = select_mass_properties(
+                    source_is_mjcf, frozen_properties, parts, diagonal, repair_preset
+                )
                 if not authored or (source_is_mjcf and n in fixed):
                     if source_is_mjcf:
                         centers = np.array([p.vertices.mean(0) for p in original_parts])
@@ -735,13 +787,21 @@ def prepare(document, bindings, out, fixed, metadata, check):
                     tip_limit_deg=float(info.get("tip_limit_deg", 15)),
                     fixed=n in fixed,
                     margin_m=max(0.01, 0.02 * diagonal),
-                    buffer_m=max(0.002, 0.005 * diagonal),
+                    buffer_m=max(0.005 if repair_preset == "text_scene_v2" else 0.002,
+                                 0.005 * diagonal),
                     visual_mesh_sha256=hashlib.sha256(
                         vertices.tobytes() + faces.tobytes()
                     ).hexdigest(),
                 )
                 np.savez_compressed(target / "visual_geometry.npz", vertices=canonical, faces=faces)
                 asset["geometry_file"] = str(target / "visual_geometry.npz")
+                if repair_preset == "text_scene_v2":
+                    check_asset()
+                    clip.write_json(target / "asset_budget.json", dict(
+                        elapsed_s=time.monotonic() - asset_started,
+                        limit_s=repair_collision_v2.ASSET_BUDGET_S,
+                        scope="native per-asset measurement through collision qualification",
+                    ))
                 asset["derived_files"] = [
                     official.fingerprint(p, target)
                     for p in sorted(target.rglob("*"))
@@ -755,6 +815,13 @@ def prepare(document, bindings, out, fixed, metadata, check):
                     flush=True,
                 )
             except Exception as exc:
+                if repair_preset == "text_scene_v2":
+                    clip.write_json(target / "asset_budget.json", dict(
+                        elapsed_s=time.monotonic() - asset_started,
+                        limit_s=repair_collision_v2.ASSET_BUDGET_S,
+                        scope="native per-asset measurement through collision qualification",
+                        budget_exhausted=time.monotonic() >= asset_deadline,
+                    ))
                 failures[n] = dict(error=f"{type(exc).__name__}: {exc}", binding=binding)
                 clip.write_json(target / "preparation_error.json", failures[n])
                 print(f"asset rejected: {n}: {exc}", flush=True)
@@ -768,6 +835,8 @@ def prepare(document, bindings, out, fixed, metadata, check):
                 coacd_options=COACD,
                 coacd_preparation=COACD_PREPARATION,
                 preprocessing=COACD_PREPARATION,
+                **(dict(repair_preset=repair_preset, collision_policy="collision_repair_v3")
+                   if repair_preset == "text_scene_v2" else {}),
             ),
         )
         check()

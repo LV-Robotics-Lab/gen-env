@@ -3,7 +3,8 @@
 Build Genesis scenes from natural-language requests, reuse native and reconstructed
 assets, and record explicit physics and rendering results. The current workflow
 lives in `self_improving/sim_adapters/genesis/`; SimFoundry provides a separate
-video reconstruction route whose individual objects can be imported into Genesis.
+image/video reconstruction route. Both individual objects and reconstructed scene
+poses can be imported into Genesis.
 
 ```text
 Natural-language request
@@ -14,7 +15,8 @@ Natural-language request
   -> independent Genesis physics validation
   -> final rendering after physical acceptance
 
-Video -> SimFoundry reconstruction -> portable URDF assets -> Genesis asset library
+Image/video -> SimFoundry -> portable URDF assets + reconstructed scene poses
+  -> finite support asset selection -> Genesis physics -> final rendering
 ```
 
 Asset selection, scene construction, physics validation, and final rendering have
@@ -28,7 +30,10 @@ physical acceptance criteria passed.
 | Prepare the Genesis environment | [Install and test](#install-and-test) |
 | Build a scene from text | [Native Genesis scene workflow](#build-a-native-genesis-asset-scene) |
 | Check an existing scene's physics | [Genesis physics validation](#validate-an-existing-native-genesis-asset-scene) |
-| Reconstruct objects from video | [SimFoundry reconstruction](#reconstruct-video-with-simfoundry) |
+| Reconstruct an image or video into a Genesis task | [Unified media workflow](#reconstruct-image-or-video-into-genesis) |
+| Construct and repair an existing text task | [Text construction and repair](#construct-and-repair-a-text-scene) |
+| Preserve a reconstructed arrangement | [Scene import](#import-a-reconstructed-scene-with-its-poses) |
+| Run upstream video reconstruction | [SimFoundry reconstruction](#reconstruct-video-with-simfoundry) |
 | Add reconstructed assets to Genesis | [URDF import and acceptance](#reuse-simfoundry-assets-in-genesis) |
 | Read detailed commands in Chinese | [Genesis adapter guide](self_improving/sim_adapters/genesis/README.md) |
 
@@ -84,6 +89,13 @@ python -m pytest -q self_improving/sim_adapters/genesis/tests
 
 Some real simulator tests require explicit opt-in and local assets; see the
 adapter's evidence notes for the corresponding commands.
+
+Media reconstruction additionally requires the separate SimFoundry environment,
+model checkpoints, service configuration, and FFmpeg/ffprobe. Installing Genesis
+alone does not prepare the media pipeline. Apply the versioned
+[SimFoundry media patch](self_improving/sim_adapters/simfoundry/patches/README.md)
+to a fresh submodule checkout before using the unified media entry. See the
+[SimFoundry setup guide](self_improving/sim_adapters/simfoundry/README.md).
 
 ## Model Configuration And Asset Prerequisites
 
@@ -147,6 +159,71 @@ a completed validator does not imply the scene passes. See the
 [adapter guide](self_improving/sim_adapters/genesis/README.md) and
 [measured evidence](self_improving/sim_adapters/genesis/PHYSICS_VALIDATION_EVIDENCE.md).
 
+## Construct And Repair A Text Scene
+
+Use the explicit construction entry to copy an existing task's `01_obj` bindings
+into a new task, prepare collision geometry, solve placement, and run physics
+with bounded repairs. It preserves the source task and records each attempt:
+
+```bash
+python -m self_improving.sim_adapters.genesis.construct_asset_scene \
+  --source-task 'output/桌上放着一个苹果、一个黄色杯子和一个橙色塑料碗。' \
+  --output-dir data/genesis_text_repair/new_v2_seed_0 \
+  --clip-index assets/genesis/clip_non_robot_v1/index.json \
+  --fixed-object table_1 --seed 0 --profile text_repair_v1 \
+  --repair-preset text_scene_v2 \
+  --numerics-profile dt2ms_tau20ms_authored_v1 --render
+```
+
+The output directory must be new. This example explicitly selects the v2 repair
+strategy and the recorded numerical configuration; it does not change CLI
+defaults. The acceptance profile requires both final stability and correct
+support ratios to reach 95%, together with the other geometry and physics gates.
+`--render` produces final views only after all required objects pass. `inside`
+is currently rejected by this text repair workflow.
+
+The recorded table-and-cup controls passed three seeds at 2 ms and matching
+1 ms replays. Full four-asset acceptance is still incomplete: the first v3
+construction stopped at apple preparation with zero physics steps, and later
+cup/bowl combination tests exposed a frozen-inertia mismatch during loading.
+These are distinct failure stages, not a successful four-asset run. See the
+[construction guide](self_improving/sim_adapters/genesis/TEXT_REPAIR_PLAN.md) and
+[text repair evidence](self_improving/sim_adapters/genesis/TEXT_REPAIR_EVIDENCE.md).
+
+## Reconstruct Image Or Video Into Genesis
+
+The unified media entry accepts exactly one image or video and writes the same four-stage
+task layout used by the text flow:
+
+```bash
+python -m self_improving.sim_adapters.genesis.reconstruct_media \
+  --image /absolute/path/to/image.jpg --name image_trial_001 --output-root output \
+  --clip-index assets/genesis/clip_non_robot_v1/index.json \
+  --vlm-config configs/llm.yaml
+```
+
+For video, replace `--image /absolute/path/to/image.jpg` with
+`--video /absolute/path/to/video.mp4` and use a new task name. Supply exactly one
+input mode. Model-backed reconstruction and selection send images to the
+configured services. `--resume` requires matching input bytes, mode, task name,
+and effective configuration.
+
+It preserves SimFoundry foreground poses, retrieves a finite Genesis desk/table/counter
+asset, creates fixed collidable `support_0`, and runs contact-bound physical validation.
+No final render is produced unless physics passes. Image depth and hidden geometry are
+explicit inference, not measurement. The pipeline permits a baseline plus at
+most three repair attempts. Exit codes are 0 for physics and rendering success,
+1 for execution/input errors, 2 for physical failure, and 3 for stable results
+whose declared relations remain unverified.
+
+**Recorded local status:** the mouse image completed stages 1b–4; the video
+decoded 124 distinct frames and sampled 15. GPU contention blocked later work,
+and online execution was not started. Both tasks recorded `execution_failed`,
+with physics and final rendering `not_run`. End-to-end media reconstruction
+has not yet passed local acceptance. See the
+[adapter guide](self_improving/sim_adapters/genesis/README.md) and
+[local acceptance record](self_improving/sim_adapters/genesis/MEDIA_RECONSTRUCTION_EVIDENCE.md).
+
 ## Reconstruct Video With SimFoundry
 
 `external/SimFoundry` is pinned to
@@ -174,8 +251,8 @@ The recorded 2026-09-07 Fruits run reconstructed seven objects and completed a
 120-step OmniGibson random-action smoke run. See the
 [reproduction record](self_improving/sim_adapters/simfoundry/REPRODUCTION.md)
 for evidence and limitations. This does not establish reconstruction accuracy or
-Genesis physical acceptance. Single-image input is supported by the pinned
-upstream source but has not been validated end to end locally.
+Genesis physical acceptance. The newer single-image and video integration has
+partial local evidence as described in the [unified media workflow](#reconstruct-image-or-video-into-genesis).
 
 ## Reuse SimFoundry Assets In Genesis
 
@@ -208,6 +285,45 @@ results, not seven physically accepted assets. Compact results are recorded in
 bulk reports and videos remain local under
 `data/simfoundry_genesis/fruits_acceptance_v2/`.
 
+## Import A Reconstructed Scene With Its Poses
+
+After importing the standard asset library, preserve the original object
+positions and full rotations with the separate scene importer:
+
+```bash
+python -m self_improving.sim_adapters.genesis.import_simfoundry_scene import \
+  --scene-dir data/simfoundry/fruits_da3_20260907 \
+  --library-path assets/genesis/my_simfoundry_library/library.json \
+  --output-dir data/simfoundry_genesis/my_scene
+
+python -m self_improving.sim_adapters.genesis.import_simfoundry_scene verify \
+  --scene-package data/simfoundry_genesis/my_scene
+
+python -m self_improving.sim_adapters.genesis.import_simfoundry_scene preview \
+  --scene-package data/simfoundry_genesis/my_scene \
+  --output-dir data/simfoundry_genesis/my_scene_preview
+
+python -m self_improving.sim_adapters.genesis.validate_imported_scene \
+  --scene-package data/simfoundry_genesis/my_scene \
+  --output-dir data/simfoundry_genesis/my_scene_physics
+```
+
+Use new output directories. The importer copies bound asset dependencies and
+applies the source world poses; it does not rerun text layout planning. Imported
+packages use this dedicated validator, not the text TaskOutput validator.
+Missing source support relations remain unknown. Even if all stability checks
+pass, that validator returns `incomplete` (exit 3) without declared relations;
+physical failure returns 2 and input/execution errors return 1.
+
+Details and supported source formats are in the
+[scene graph importer](self_improving/sim_adapters/genesis/SIMFOUNDRY_SCENES.md).
+It writes Genesis v2 graph/layout files with full object poses and portable assets.
+The seven-object Fruits scene passed native loading and three-view rendering.
+A separate 1,000-step physics run completed with five objects passing stability
+checks and two failing: pear penetration and teal plate angular speed.
+Sequential video and final diagnostic views are available; declared support
+relationship acceptance remains unverified.
+
 ## Local Output Organization
 
 `output/` contains task folders named from the input. Shared Genesis assets and indexes live in
@@ -216,6 +332,18 @@ bulk reports and videos remain local under
 `data/storage_maintenance/`. See the [Chinese directory guide](repo-docs/modules/self-improving-platform.md#输出共享资源与缓存).
 
 ## Evidence And Acceptance
+
+The recorded results below describe different inputs and profiles; they are not
+interchangeable acceptance claims.
+
+| Workflow | Recorded result | Remaining limitation |
+| --- | --- | --- |
+| Native four-asset text scene | Initial construction and previews available | Original physics gates failed |
+| Text v2 table-and-cup controls | Three seeds and their half-step replays passed | Full four-asset acceptance incomplete |
+| Unified mouse image/video tasks | Partial preprocessing completed | Execution failed; physics/rendering not run |
+| Fruits single-asset import | 7 imports and 42 previews passed | All 7 drop tests failed |
+| Fruits scene import | 7 objects loaded and rendered; physics completed | 2 objects failed; declared support acceptance unverified |
+
 
 - Initial scene previews establish asset loading and visible layout. Run the
   independent physics stage to evaluate stability, support, penetration, and

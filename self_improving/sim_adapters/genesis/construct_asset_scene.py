@@ -25,6 +25,7 @@ from self_improving.sim_adapters.genesis.extract_assets import verified_binding
 from self_improving.sim_adapters.genesis.task_output import TaskOutput
 
 SCHEMA = "genenv.text_repair_run.v1"
+REPAIR_PRESETS = ("legacy", "text_scene_v2")
 
 
 def preferences(document):
@@ -76,8 +77,26 @@ class PlacementFailure(ValueError):
     pass
 
 
+class PhysicsEvidenceChanged(ValueError):
+    pass
+
+
+def verify_artifacts(files):
+    for path, digest in files.items():
+        if not path.is_file() or lib.sha256(path) != digest:
+            raise PhysicsEvidenceChanged(f"verified physics evidence changed: {path.name}")
+
+
+def contact_dynamics_failed(result):
+    """A new XY placement cannot isolate failures limited to contact dynamics."""
+    failures = {reason for reasons in result["failures"].values() for reason in reasons}
+    return bool(result["complete"] and failures and failures <= {
+        "stable_velocity", "support_preserved"
+    })
+
+
 def repair_loop(assets, poses, graph, prefs, seed, out, check, *, simulator, recorder,
-                profile=geometry.PROFILE):
+                profile=geometry.PROFILE, numerics_profile="legacy", repair_preset="legacy"):
     attempts, counts = [], {n: 0 for n in assets}
     dynamic = [n for n in graph["order"] if not assets[n]["fixed"]]
     budget = 1 + 10 * len(dynamic)
@@ -87,13 +106,20 @@ def repair_loop(assets, poses, graph, prefs, seed, out, check, *, simulator, rec
     for trial in range(budget):
         directory = out / "attempts" / f"{trial:03d}"
         directory.mkdir(parents=True, exist_ok=False)
-        data = physics.frozen_input(assets, current, graph["relations"], seed, profile=profile)
+        options = dict(profile=profile)
+        if numerics_profile != "legacy":
+            options["numerics_profile"] = numerics_profile
+        if repair_preset != "legacy":
+            options["repair_preset"] = repair_preset
+        data = physics.frozen_input(assets, current, graph["relations"], seed, **options)
         input_path = directory / "physics_input.json"
         clip.write_json(input_path, data)
         input_hash = lib.sha256(input_path)
+        verified_artifacts = {}
 
         def check_trial():
             check()
+            verify_artifacts(verified_artifacts)
             if lib.sha256(input_path) != input_hash:
                 raise ValueError("frozen physics input changed during trial")
 
@@ -138,6 +164,7 @@ def repair_loop(assets, poses, graph, prefs, seed, out, check, *, simulator, rec
             raise
         result.update(input_sha256=input_hash, trace_sha256=lib.sha256(directory / "trace.jsonl"))
         clip.write_json(directory / "validation_result.json", result)
+        verified_artifacts = {p: lib.sha256(p) for p in directory.rglob("*") if p.is_file()}
         attempts.append(
             dict(
                 directory=str(directory),
@@ -167,12 +194,20 @@ def repair_loop(assets, poses, graph, prefs, seed, out, check, *, simulator, rec
                 dict(reason="initial state rejected; no sequential physical motion"),
             )
         check_trial()
+        durable = [json.loads(line) for line in (directory / "trace.jsonl").open()]
+        final_verdict = physics.evaluate(data, durable, initial_rejected=not result["complete"])
+        if any(result.get(k) != value for k, value in final_verdict.items()):
+            raise PhysicsEvidenceChanged("physics verdict changed before sealing attempt")
         files = [
             official.fingerprint(p, directory) for p in sorted(directory.rglob("*")) if p.is_file()
         ]
         clip.write_json(directory / "manifest.json", dict(files=files))
         if result["passed"]:
             return result, attempts, current, data
+        if repair_preset == "text_scene_v2" and contact_dynamics_failed(result):
+            attempts[-1]["stop_reason"] = "CONTACT_DYNAMICS_FAILED"
+            clip.write_json(out / "attempts.json", attempts)
+            break
         failed = next((n for n in dynamic if result["failures"][n]), None)
         if failed is None or counts[failed] >= 10:
             break
@@ -201,6 +236,8 @@ def run(
     fixed_objects=(),
     seed=0,
     profile=geometry.PROFILE,
+    numerics_profile="legacy",
+    repair_preset="legacy",
     render=False,
     asset_metadata=None,
     preparer=preparation.prepare,
@@ -209,6 +246,11 @@ def run(
 ):
     if profile not in physics.PROFILES or seed < 0:
         raise ValueError("unsupported profile or negative seed")
+    if repair_preset not in REPAIR_PRESETS:
+        raise ValueError("unsupported repair preset")
+    if repair_preset == "text_scene_v2" and profile != geometry.PROFILE:
+        raise ValueError("text_scene_v2 requires the text_repair_v1 acceptance profile")
+    physics.settings(profile, numerics_profile=numerics_profile)
     source, task = TaskOutput(source_task), TaskOutput(output_dir)
     clip.separate(source.root, task.root, Path(clip_index).resolve().parent, preparation.CACHE)
     started = time.perf_counter()
@@ -262,16 +304,22 @@ def run(
             model_calls=0,
             retrieval_calls=0,
         )
+        if repair_preset != "legacy" or numerics_profile != "legacy":
+            report.update(repair_preset=repair_preset, numerics_profile=numerics_profile)
         stage = "scene"
+        phase = "asset_preparation"
         try:
             task.start_scene()
             clip.write_json(
                 task.stage("scene") / "source_manifest.json",
                 dict(source_root=str(source.root), files=original["files"]),
             )
-            assets = preparer(
-                document, bindings, task.stage("scene"), fixed, metadata, check_source
+            preparation_options = (
+                {} if repair_preset == "legacy" else dict(repair_preset=repair_preset)
             )
+            assets = preparer(document, bindings, task.stage("scene"), fixed, metadata,
+                              check_source, **preparation_options)
+            phase = "scene"
             graph = geometry.graph(document, assets)
             prefs = preferences(document)
             poses = make_initial(assets, graph, prefs, seed, task.stage("scene"))
@@ -286,13 +334,18 @@ def run(
                 metadata=metadata,
                 metadata_sha256=metadata_hash,
             )
+            if repair_preset != "legacy" or numerics_profile != "legacy":
+                scene.update(repair_preset=repair_preset, numerics_profile=numerics_profile)
             clip.write_json(task.stage("scene") / "scene_v0.json", scene)
             task.finish_scene(dict(status="scene_built", profile=profile))
             stage = "physics"
+            phase = "physics"
             task.start_physics()
+            sealed_physics = {}
 
             def check():
                 check_source()
+                verify_artifacts(sealed_physics)
                 task.verify_physics_inputs()
                 for a in assets.values():
                     official.verify_files(Path(a["derived_root"]), a["derived_files"])
@@ -308,13 +361,17 @@ def run(
                 simulator=simulator,
                 recorder=recorder,
                 profile=profile,
+                numerics_profile=numerics_profile,
+                repair_preset=repair_preset,
             )
             passed = result is not None and result["passed"]
             report.update(
                 status="physics_passed" if passed else "physics_failed",
                 physics_status="passed" if passed else "failed",
                 exit_code=0 if passed else 2,
-                failure_kind=None if passed else "PLACEMENT_FAILED",
+                failure_kind=(None if passed else "CONTACT_DYNAMICS_FAILED"
+                              if repair_preset == "text_scene_v2" and result is not None
+                              and contact_dynamics_failed(result) else "PLACEMENT_FAILED"),
                 attempts=attempts,
                 final_metrics=result,
                 simulation_executed=any(a["steps_executed"] for a in attempts),
@@ -322,6 +379,7 @@ def run(
             )
             if passed:
                 last = Path(attempts[-1]["directory"])
+                sealed_physics = {p: lib.sha256(p) for p in last.rglob("*") if p.is_file()}
                 state = lib.read_json(last / "final_state.json")["state"]
                 validated = dict(
                     schema_version="genenv.validated_asset_scene.v1",
@@ -334,9 +392,13 @@ def run(
                     source_trace_sha256=lib.sha256(last / "trace.jsonl"),
                     source_input_sha256=lib.sha256(last / "physics_input.json"),
                 )
+                if repair_preset != "legacy" or numerics_profile != "legacy":
+                    validated.update(repair_preset=repair_preset,
+                                     numerics_profile=numerics_profile, profile=profile)
                 clip.write_json(task.stage("physics") / "validated_scene.json", validated)
                 if render:
                     stage = "final_render"
+                    phase = "final_render"
                     # Authorize 04 only after physical acceptance has been established.
                     task.report["stages"]["physics"] = "passed"
                     recorder(
@@ -349,9 +411,15 @@ def run(
                     )
                     report["render_status"] = "passed"
             check()
+            if passed:
+                durable = [json.loads(line) for line in (last / "trace.jsonl").open()]
+                final_verdict = physics.evaluate(passing_data, durable)
+                if any(result.get(k) != value for k, value in final_verdict.items()):
+                    raise PhysicsEvidenceChanged("physics verdict changed before sealing task")
         except PlacementFailure as exc:
             report.update(
-                status="physics_failed",
+                status=("scene_failed" if repair_preset == "text_scene_v2"
+                        and stage == "scene" else "physics_failed"),
                 exit_code=2,
                 error=str(exc),
                 failure_kind="PLACEMENT_FAILED",
@@ -359,16 +427,22 @@ def run(
             if stage == "scene":
                 task.report["stages"]["scene"] = "failed"
         except BaseException as exc:
+            status = "physics_failed" if stage != "final_render" else "physics_passed"
+            if repair_preset == "text_scene_v2":
+                status = ("preparation_failed" if phase == "asset_preparation" else
+                          "scene_failed" if stage == "scene" else "execution_failed")
             report.update(
-                status="physics_failed" if stage != "final_render" else "physics_passed",
+                status=status,
                 exit_code=1,
                 error=f"{type(exc).__name__}: {exc}",
-                failure_kind=stage,
+                failure_kind=phase if repair_preset == "text_scene_v2" else stage,
             )
             if stage == "scene":
                 task.report["stages"]["scene"] = "failed"
             elif stage == "physics":
-                report["physics_status"] = "failed"
+                report["physics_status"] = (
+                    "invalid" if repair_preset == "text_scene_v2" else "failed"
+                )
                 path = task.stage("physics") / "attempts.json"
                 attempts = lib.read_json(path) if path.exists() else []
                 report.update(
@@ -378,6 +452,24 @@ def run(
                 )
             else:
                 report["render_status"] = "failed"
+            if isinstance(exc, PhysicsEvidenceChanged):
+                report.update(
+                    status=("execution_failed" if repair_preset == "text_scene_v2"
+                            else "physics_failed"),
+                    physics_status="invalid" if repair_preset == "text_scene_v2" else "failed",
+                    render_status="not_run", failure_kind="integrity",
+                )
+                diagnostics = task.stage("physics") / "diagnostics"
+                if any(task.stage("final_render").iterdir()):
+                    diagnostics.mkdir(parents=True, exist_ok=True)
+                    shutil.move(
+                        str(task.stage("final_render")), diagnostics / "rejected_final_render"
+                    )
+                    task.stage("final_render").mkdir()
+                validated = task.stage("physics") / "validated_scene.json"
+                if validated.exists():
+                    diagnostics.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(validated), diagnostics / "rejected_validated_scene.json")
         finally:
             report["total_s"] = time.perf_counter() - started
             task.report.update(status=report["status"], construction=report)
@@ -408,6 +500,8 @@ def main(argv=None):
     parser.add_argument("--fixed-object", action="append", default=[])
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--profile", choices=physics.PROFILES, default=geometry.PROFILE)
+    parser.add_argument("--numerics-profile", choices=physics.NUMERICS_PROFILES, default="legacy")
+    parser.add_argument("--repair-preset", choices=REPAIR_PRESETS, default="legacy")
     parser.add_argument("--asset-metadata", type=Path)
     parser.add_argument("--render", action="store_true")
     args = parser.parse_args(argv)
@@ -419,6 +513,8 @@ def main(argv=None):
             fixed_objects=args.fixed_object,
             seed=args.seed,
             profile=args.profile,
+            numerics_profile=args.numerics_profile,
+            repair_preset=args.repair_preset,
             render=args.render,
             asset_metadata=args.asset_metadata,
         )
