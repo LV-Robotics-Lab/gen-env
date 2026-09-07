@@ -1,0 +1,3 @@
+# Optional native USD inspection for build_library_previews.py.
+# Requires the pinned Genesis checkout/environment documented in README.md.
+usd-core==26.8

@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from scene_gen.parser import parse_provider_payload, parse_rule_based
+from scene_gen.parser import (
+    parse_provider_payload,
+    parse_rule_based,
+    validate_prompt_boundary,
+)
 from scene_gen.schema import RelationType, SceneSpecError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -277,3 +281,61 @@ def test_quantity_expansion_digest_is_deterministic() -> None:
 def test_unsupported_or_unbound_quantities_fail_closed(prompt: str) -> None:
     with pytest.raises(SceneSpecError):
         parse_rule_based(prompt, seed=36)
+
+
+@pytest.mark.parametrize(
+    "user_text",
+    [
+        "Use C:/secret/key for the cup.",
+        "Use .ssh/id_rsa for the cup.",
+        "Use $HOME/.ssh/id_rsa for the cup.",
+        r"Use \\server\share for the cup.",
+        'Use "/etc/passwd" for the cup.',
+        "Use path=/etc/passwd for the cup.",
+        'Run print("secret") and place a cup.',
+        "Place a cup at 0.1, 0.2, 0.3.",
+        "Place a cup using 071_can.",
+        "Use https://internal.example/token for the cup.",
+    ],
+)
+def test_prompt_boundary_rejects_code_paths_ids_and_coordinates(user_text: str) -> None:
+    with pytest.raises(SceneSpecError, match="forbidden"):
+        validate_prompt_boundary(user_text)
+
+
+def test_provider_payload_applies_prompt_and_seed_boundary_directly() -> None:
+    payload = {
+        "objects": [{"object_id": "cup_1", "category": "cup"}],
+        "relations": [{"relation": "on_table", "source": "cup_1", "target": "table"}],
+    }
+
+    with pytest.raises(SceneSpecError, match="filesystem path"):
+        parse_provider_payload(payload, request="Use /etc/passwd for a cup.", seed=1)
+    with pytest.raises(SceneSpecError, match="seed"):
+        parse_provider_payload(
+            payload,
+            request="Place a cup on the table.",
+            seed=True,
+        )
+
+
+def test_long_prompt_scene_ids_keep_the_full_hash_suffix() -> None:
+    payload = {
+        "objects": [{"object_id": "cup_1", "category": "cup"}],
+        "relations": [{"relation": "on_table", "source": "cup_1", "target": "table"}],
+    }
+    shared = "a" * 120
+    first = parse_provider_payload(
+        payload,
+        request=f"{shared} Place a cup on the table.",
+        seed=8,
+    )
+    second = parse_provider_payload(
+        payload,
+        request=f"{shared} Put a cup on the table.",
+        seed=8,
+    )
+
+    assert first.scene_id != second.scene_id
+    assert len(first.scene_id.rsplit("_", 1)[-1]) == 10
+    assert len(second.scene_id.rsplit("_", 1)[-1]) == 10

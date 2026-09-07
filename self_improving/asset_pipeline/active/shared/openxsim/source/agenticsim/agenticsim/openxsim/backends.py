@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import html
 import json
 import os
 import re
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from .ir import AssetBundle, AssetRepresentation, EnvironmentPackage, SceneObject
+from .ir import AssetBundle, AssetRepresentation, EnvironmentPackage
 from .robotwin import RoboTwinExportError, write_robotwin_bundle
 
 
@@ -144,6 +146,337 @@ class BackendCompiler:
         if strict and result.blockers:
             raise BackendCompileError("; ".join(result.blockers))
         return result
+
+
+_GENESIS_COLOR_RGB: dict[str, tuple[float, float, float]] = {
+    # Keep these values byte-for-byte aligned with scene_gen.colors.COLOR_RGB.
+    # The adapter copies the stable table instead of importing the core compiler.
+    "black": (0.08, 0.09, 0.10),
+    "blue": (0.10, 0.32, 0.78),
+    "brown": (0.38, 0.19, 0.08),
+    "green": (0.12, 0.55, 0.28),
+    "orange": (0.95, 0.38, 0.06),
+    "pink": (0.93, 0.35, 0.58),
+    "purple": (0.48, 0.18, 0.72),
+    "red": (0.82, 0.10, 0.12),
+    "white": (0.82, 0.84, 0.86),
+    "yellow": (0.92, 0.72, 0.08),
+}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _genesis_asset_integrity_blockers(
+    representation: AssetRepresentation,
+    path: Path,
+) -> list[str]:
+    """Validate the primary representation and its local dependency closure."""
+
+    problems: list[str] = []
+    if not representation.sha256:
+        problems.append("representation is missing a required sha256")
+    elif _sha256_file(path) != representation.sha256:
+        problems.append("representation sha256 does not match the asset on disk")
+    if path.stat().st_size != representation.size_bytes:
+        problems.append(
+            "representation size_bytes does not match the asset on disk "
+            f"({representation.size_bytes} declared, {path.stat().st_size} actual)"
+        )
+
+    metadata = representation.metadata
+    discovery = metadata.get("dependency_discovery")
+    dependencies = metadata.get("dependencies")
+    dependency_errors = metadata.get("dependency_errors")
+    if not isinstance(discovery, str) or not discovery.strip():
+        problems.append("representation is missing dependency_discovery metadata")
+    if not isinstance(dependencies, list) or not isinstance(dependency_errors, list):
+        problems.append("representation does not declare a local dependency closure")
+        return problems
+    problems.extend(f"dependency discovery: {value}" for value in dependency_errors)
+    for index, record in enumerate(dependencies):
+        if not isinstance(record, dict):
+            problems.append(f"dependency {index} is not an object")
+            continue
+        dependency = _path_uri(str(record.get("uri") or ""))
+        if dependency is None or not dependency.is_file():
+            problems.append(f"dependency {index} does not exist: {record.get('uri')!r}")
+            continue
+        expected_sha = str(record.get("sha256") or "")
+        expected_size = record.get("size_bytes")
+        if _sha256_file(dependency) != expected_sha:
+            problems.append(f"dependency sha256 mismatch: {dependency}")
+        if expected_size != dependency.stat().st_size:
+            problems.append(f"dependency size mismatch: {dependency}")
+    return problems
+
+
+def _genesis_dimensions(asset: AssetBundle) -> list[float]:
+    values = asset.physical.get("dimensions_m")
+    if isinstance(values, (list, tuple)) and len(values) == 3:
+        try:
+            dimensions = [float(value) for value in values]
+        except (TypeError, ValueError):
+            dimensions = []
+        if len(dimensions) == 3 and all(value > 0.0 for value in dimensions):
+            return dimensions
+    return [0.1, 0.1, 0.1]
+
+
+def _genesis_representation(asset: AssetBundle) -> AssetRepresentation | None:
+    formats = {"obj", "stl", "dae", "glb", "gltf", "urdf"}
+    for backend in ("genesis", "portable"):
+        for representation in asset.representations:
+            if representation.backend != backend:
+                continue
+            if representation.format.lower() not in formats:
+                continue
+            if representation.role not in {"visual", "visual_and_collision"}:
+                continue
+            return representation
+    return None
+
+
+def _genesis_articulation_blocker(
+    articulation: dict[str, Any], path: Path
+) -> str | None:
+    names = [str(value) for value in articulation.get("joint_names") or []]
+    qpos = list(articulation.get("qpos") or [])
+    limits = list(articulation.get("joint_limits") or [])
+    if not names and not qpos and not limits:
+        return None
+    if len(names) != len(qpos) or (limits and len(limits) != len(names)):
+        return "articulation joint_names, qpos, and joint_limits have inconsistent lengths"
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError) as exc:
+        return f"cannot parse URDF articulation: {exc}"
+    joint_types = {
+        str(joint.get("name")): str(joint.get("type") or "")
+        for joint in root.findall("joint")
+        if joint.get("name")
+    }
+    missing = [name for name in names if name not in joint_types]
+    if missing:
+        return f"URDF is missing declared joints {missing}"
+    unsupported = {
+        name: joint_types[name]
+        for name in names
+        if joint_types[name] not in {"continuous", "prismatic", "revolute"}
+    }
+    if unsupported:
+        return f"Genesis render v1 requires one-DoF articulation joints, got {unsupported}"
+    return None
+
+
+class GenesisCompiler(BackendCompiler):
+    """Compile a portable package into a deterministic Genesis render bundle."""
+
+    backend = "genesis"
+
+    def compile(self, package: EnvironmentPackage, output_dir: str | Path, *, strict: bool = False) -> CompileResult:
+        package.validate()
+        output = Path(output_dir).expanduser().resolve() / self.backend
+        output.mkdir(parents=True, exist_ok=True)
+        artifact = output / "scene.json"
+        runner = output / "run_genesis_render.py"
+        assets = _asset_map(package)
+        blockers: list[str] = []
+        warnings: list[str] = []
+        object_specs: list[dict[str, Any]] = []
+
+        for obj in package.env.objects:
+            asset = assets[obj.asset_id]
+            dimensions = _genesis_dimensions(asset)
+            color_name = str(obj.metadata.get("color") or "").strip().lower()
+            color_rgb = _GENESIS_COLOR_RGB.get(color_name)
+            if color_name and color_rgb is None:
+                blockers.append(
+                    f"{obj.instance_id}: unsupported explicit color override {color_name!r}"
+                )
+            item: dict[str, Any] = {
+                "instance_id": obj.instance_id,
+                "asset_id": obj.asset_id,
+                "kind": "",
+                "pose": {
+                    "position": list(obj.pose.position),
+                    "orientation_wxyz": list(obj.pose.orientation_wxyz),
+                },
+                "source_static": obj.static,
+                "render_fixed": True,
+                "scale": list(obj.scale),
+                "dimensions_m": dimensions,
+                "z_policy": obj.metadata.get("z_policy") or "center_on_table",
+                "color": color_name or None,
+                "color_rgb": list(color_rgb) if color_rgb is not None else None,
+                "material": obj.metadata.get("material"),
+                "articulation": dict(
+                    obj.metadata.get("articulation") or asset.articulation
+                ),
+            }
+            primitive = _primitive(asset)
+            if primitive is not None:
+                half = primitive.metadata.get("half_size_m") or [0.025, 0.025, 0.025]
+                item.update(
+                    {
+                        "kind": "box",
+                        "size_m": [
+                            2.0 * float(half[index]) * obj.scale[index]
+                            for index in range(3)
+                        ],
+                        "color_rgb": list(
+                            color_rgb
+                            or primitive.metadata.get("color_rgb")
+                            or [0.8, 0.8, 0.8]
+                        ),
+                    }
+                )
+                object_specs.append(item)
+                continue
+
+            representation = _genesis_representation(asset)
+            path = _path_uri(representation.uri) if representation is not None else None
+            if representation is None or path is None or not path.is_file():
+                available = sorted({rep.format.lower() for rep in asset.representations})
+                blocker = (
+                    f"{obj.instance_id}: no existing Genesis visual representation "
+                    f"(supported: dae, glb, gltf, obj, stl, urdf; available: {available})"
+                )
+                blockers.append(blocker)
+                item.update({"kind": "missing", "blocker": blocker})
+                object_specs.append(item)
+                continue
+
+            fmt = representation.format.lower()
+            integrity_blockers = _genesis_asset_integrity_blockers(representation, path)
+            if integrity_blockers:
+                blocker = f"{obj.instance_id}: " + "; ".join(integrity_blockers)
+                blockers.append(blocker)
+                item.update({"kind": "missing", "blocker": blocker})
+                object_specs.append(item)
+                continue
+            item.update(
+                {
+                    "kind": "urdf" if fmt == "urdf" else "mesh",
+                    "format": fmt,
+                    "uri": str(path),
+                    "representation_role": representation.role,
+                    "source_sha256": representation.sha256,
+                    "source_size_bytes": representation.size_bytes,
+                    "source_dependencies": list(
+                        representation.metadata.get("dependencies") or []
+                    ),
+                    "source_dependency_discovery": representation.metadata.get(
+                        "dependency_discovery"
+                    ),
+                }
+            )
+            if fmt == "urdf":
+                if max(obj.scale) - min(obj.scale) > 1e-9:
+                    blocker = (
+                        f"{obj.instance_id}: Genesis URDF requires uniform scale, "
+                        f"got {list(obj.scale)}"
+                    )
+                    blockers.append(blocker)
+                    item.update({"kind": "missing", "blocker": blocker})
+                else:
+                    articulation_blocker = _genesis_articulation_blocker(
+                        item["articulation"], path
+                    )
+                    if articulation_blocker is not None:
+                        blocker = f"{obj.instance_id}: {articulation_blocker}"
+                        blockers.append(blocker)
+                        item.update({"kind": "missing", "blocker": blocker})
+                    else:
+                        item["uniform_scale"] = float(obj.scale[0])
+            else:
+                item["file_meshes_are_zup"] = bool(
+                    representation.metadata.get(
+                        "file_meshes_are_zup", fmt not in {"glb", "gltf"}
+                    )
+                )
+                item["genesis_scale"] = (
+                    list(obj.scale)
+                    if item["file_meshes_are_zup"]
+                    else [obj.scale[0], obj.scale[2], obj.scale[1]]
+                )
+            object_specs.append(item)
+
+        x_min, y_min, table_height, x_max, y_max, _ = package.env.workspace_bounds_m
+        table_thickness = 0.04
+        payload = {
+            "schema": "agenticsim.genesis_render_scene.v1",
+            "package_id": package.package_id,
+            "package_digest": package.digest(),
+            "package_path": "environment_package.json",
+            "environment": {
+                "name": package.env.name,
+                "workspace_bounds_m": list(package.env.workspace_bounds_m),
+                "table_height_m": float(table_height),
+            },
+            "table": {
+                "center": [
+                    (x_min + x_max) / 2.0,
+                    (y_min + y_max) / 2.0,
+                    table_height - table_thickness / 2.0,
+                ],
+                "size": [x_max - x_min, y_max - y_min, table_thickness],
+                "color_rgb": [0.46, 0.31, 0.20],
+            },
+            "render": {
+                "renderer": "genesis_rasterizer",
+                "width": 640,
+                "height": 480,
+                "frames": 120,
+                "fps": 12,
+                "compute_backend": "cpu",
+            },
+            "objects": object_specs,
+            "task_contract": package.task.semantic_contract(),
+        }
+        artifact.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        runner.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r})\n\n"
+            "from agenticsim.openxsim.genesis_runtime import main\n\n"
+            "if __name__ == '__main__':\n"
+            "    raise SystemExit(main())\n",
+            encoding="utf-8",
+        )
+        result = _write_manifest(
+            package,
+            output,
+            backend=self.backend,
+            status=_status(blockers),
+            artifact=artifact,
+            blockers=blockers,
+            warnings=warnings,
+            runtime_command=(
+                sys.executable,
+                str(runner),
+                "--scene",
+                str(artifact),
+                "--output-dir",
+                str(output / "render"),
+            ),
+            metadata={
+                "artifact_format": "agenticsim.genesis_render_scene.v1",
+                "render_runner": str(runner),
+                "renderer": "genesis_rasterizer",
+                "render_only": True,
+            },
+        )
+        return self._finish(result, strict=strict)
 
 
 def _usda_string(value: str) -> str:
@@ -850,6 +1183,7 @@ class RoboTwinCompiler(BackendCompiler):
 
 
 COMPILERS: dict[str, type[BackendCompiler]] = {
+    "genesis": GenesisCompiler,
     "isaac": IsaacSimCompiler,
     "isaacsim": IsaacSimCompiler,
     "mujoco": MuJoCoCompiler,

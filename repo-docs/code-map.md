@@ -4,7 +4,7 @@
 
 | 路径 | 职责 | 关键代码 | 与主流程的关系 |
 | --- | --- | --- | --- |
-| `scene_gen/` | 编译器核心库：契约、解析、grounding、求解、builder、validator、绘制代理、acceptance。 | `schema.py`、`parser.py`、`grounding.py`、`solver.py`、`builder.py`、`validator.py`、`scene_gen/envs/generated_scene.py` | 主流程每一阶段都住在这里；CLI 与 demo 只是薄入口 |
+| `scene_gen/` | 编译器核心库：契约、默认规则解析、可选 LLM 提取、grounding、求解、builder、validator、绘制代理、acceptance。 | `schema.py`、`parser.py`、`llm_provider.py`、`semantic_checks.py`、`grounding.py`、`solver.py`、`builder.py`、`validator.py`、`scene_gen/envs/generated_scene.py` | 主流程每一阶段都住在这里；CLI 与 demo 只是薄入口 |
 | `script/` | CLI 入口：编译、回放、批量验收、矩阵、可选渲染评判、stage-5 报告。 | `generate_scene.py`、`run_scene_runtime.py`、`run_100_seed_acceptance.py`、`run_prompt_matrix.py` | 编排 `scene_gen`；流水线逻辑加进 `scene_gen`，不要加在这里 |
 | `demo/` | Flask 控制面，把 GPU 任务队列入队并按 id 暴露已注册产物。 | `app.py` | 复用同一 `scene_gen` 流水线；不是新流水线，只加队列 + 路由 |
 | `tests/` | pytest 套件 + committed fixture；为每个误报模式留攻击测试。 | `tests/scene_gen/test_<module>.py`、`tests/fixtures/{asset_catalog,golden_prompts,prompt_matrix}.json` | 锁住契约与失败分支；套件无需 RoboTwin checkout 即可跑 |
@@ -17,27 +17,29 @@
 | 重要代码 | 功能 | 关键符号 | 调用方 / 使用方 |
 | --- | --- | --- | --- |
 | `schema.py` | 类型化 pydantic 契约；禁用键；跨字段不变量；digest。 | `SceneSpec`、`ResolvedSceneSpec`、`ResolvedObject`、`RelationType`、`SceneSpecError`、`FORBIDDEN_SCENE_KEYS`、`SceneSpec.digest`、`ResolvedSceneSpec.digest` | 被 `parser`、`grounding`、`solver`、`builder`、`validator`、`asset_generator` 全部依赖；改这里先动它 |
-| `parser.py` | 受限中英文 prompt → `SceneSpec`；绝不产出代码/路径/id/pose。 | `parse_rule_based`、`extract_mentions`、`_relation_between`、`validate_prompt_boundary`、`OBJECT_TERMS`、`COLOR_TERMS`、`MATERIAL_TERMS`、`REGION_TERMS`、`FORBIDDEN_PROMPT_PATTERNS`、`StructuredSceneProvider`（provider 协议） | 被 `script/generate_scene.py` 与 `tests/scene_gen/test_parser.py` 使用；详解在 [受限解析](modules/bounded-parser.md) |
+| `parser.py` | 默认受限中英文规则解析器 + provider 公共边界；本地重建 caller-owned envelope，禁止代码/路径/资产 id/pose。 | `parse_rule_based`、`parse_with_provider`、`parse_provider_payload`、`validate_prompt_boundary`、`StructuredSceneProvider` | 被 `script/generate_scene.py`、`llm_provider.py` 与 `tests/scene_gen/test_parser.py` 使用；详解在 [受限解析](modules/bounded-parser.md) |
+| `llm_provider.py` | 显式 opt-in 的两阶段 objects/relations 提取；严格 JSON/白名单清洗、默认三次（可配置 1–10）带反馈重试、成功缓存与无密钥证据。 | `LLMSceneProvider`、`LLMProviderConfig`、`LLMProviderError`、`load_llm_provider_config`、`EVIDENCE_SCHEMA` | `generate_scene.py --provider llm` 懒加载；默认 rule、Demo 与批量 runner 不调用 |
+| `semantic_checks.py` | 用高置信词法证据拒绝否定、已知物体数量冲突、虚构属性及直接关系遗漏/反向。 | `reject_unsupported_negation`、`validate_object_extraction`、`validate_relation_extraction` | 由 `llm_provider.py` 在调用前和两个阶段清洗后使用；无网络 |
 | `grounding.py` | 把 object 提及落到真实 catalog 模型上，确定性 tie-break + 拒因记录。 | `ground_object`、`ground_scene`、`GroundedSelection`、`_semantic_score`、`_tie_break` | 被 `solver.solve_scene` 调用 |
 | `solver.py` | bounded rejection backtracking；按 support depth 排序摆位；失败抛机读 trace。 | `solve_scene`、`SceneSolveError`、`CandidatePose`、`_support_depth`、`_pair_relation_reasons`、`COMPILER_VERSION = "scene_gen.stage5_solver.v3"` | 被 `script/generate_scene.py` 调用；机制在 [受限求解器](modules/solver.md) |
 | `support_geometry.py` | 目标局部 support / containment 几何数学。 | `footprint_2d`、`support_surface_dimensions`、`support_surface_shape`、`support_surface_z`、`support_footprint_margin`、`sample_supported_offset` | 被 `solver`、`validator`、`run_scene_runtime` 共用；机制在 [目标局部几何](modules/target-local-geometry.md) |
 | `asset_generator.py` | catalog miss / collision 不稳时的确定性代理；procedural primitive + derived scale；携来源 lineage。 | `ensure_assets_for_scene`、`_geometry`、`_prism_obj`、`_write_proxy_asset`、`PRIMITIVE_PROXY_SOURCES = {("004_fluted-block", 0)}`、`SCALE_HEADROOM = 0.92`、`MIN_DERIVED_SCALE = 0.35`、`GENERATOR_VERSION`/`PROXY_GENERATOR_VERSION`/`SCALE_GENERATOR_VERSION` | 被 `script/generate_scene.py` 的 `--generate-missing-assets` 调用；机制在 [确定性代理](modules/derived-proxy.md) |
 | `catalog.py` | 从 RoboTwin checkout 扫资产目录；尺寸/朝向/关节/可用性；override 合并。 | `AssetCatalog`、`CatalogEntry`、`CatalogModel`、`CatalogJoint`、`load_catalog`、`AssetCatalog.digest`、合并 `asset_overrides.yml` 的逻辑 | 被 `grounding`、`solver`、`validator`、`run_scene_runtime` 用；fixture 版在 `tests/fixtures/asset_catalog.json` |
 | `asset_overrides.yml` | 实测 RoboTwin 资产几何 override。 | `003_plate` model 0 的 100 mm 稳定面 + 8 mm 余量、`110_basket` model 1 的 12 mm 内底偏移、`071_can`/`021_cup` 稳定朝向、`036_cabinet`/`037_box` articulation qpos | 全部下游通过 catalog 间接读 |
-| `builder.py` | 哈希绑定的 resolved 包构建 + 自证。 | `build_scene_package`、`verify_package`、`generated_module_source`、`_sha256` | 被 `script/generate_scene.py` 调用；机制在 [哈希绑定包](modules/replay-package.md) |
+| `builder.py` | 哈希绑定的 resolved 包构建 + 自证；可校验并纳入相对路径 additional files。 | `build_scene_package`、`additional_files`、`verify_package`、`generated_module_source`、`_sha256` | 被 `script/generate_scene.py` 调用；LLM 路径用它绑定 `llm_parse_evidence.json`；机制在 [哈希绑定包](modules/replay-package.md) |
 | `scene_gen/envs/generated_scene.py` | 回放入口：把 `ResolvedSceneSpec` 构造成 SAPIEN actor；不执行用户代码。 | `load_resolved_scene`、`_coerce_resolved`、`_apply_color_override` | 被 `script/run_scene_runtime.py` 与 builder 写的 `generated_scene.py:load_scene` 调用 |
 | `runtime_sampling.py` | 视频帧采样无依赖工具。 | `video_sample_steps` | 被 `run_scene_runtime.py` 用；行越长越好该函数越小 |
 | `validator.py` | 静态 + 运行时 validator：把几何关系与 runtime_evidence 翻成 checks。 | `validate_resolved_scene`、`_relation_pass`、`_aabb3`、`_interior_aabb`、`_support_surface` | 被 `generate_scene.py`（静态）、`run_scene_runtime.py`（运行时）、`tests/scene_gen/test_builder_validator.py`（攻击）调用；门控在 [运行时门控](modules/runtime-gates.md) |
 | `acceptance.py` | 批量 95% 通过率聚合。 | `summarize_acceptance`、`minimum_pass_rate=0.95` | 被 batch/matrix runner 用，不在主编译路径上 |
 | `rendered_critic.py` | 可选 VLM 渲染评判，只查可见语义；非物理证据。 | `rendered_critic` 主入口 + 中间件 | 只在 `pip install -e '.[vlm]'` 后由 `script/run_rendered_critic.py` 调用；属相邻路径 |
 | `colors.py` | 颜色名 → RGB 映射，运行时颜色 override 用它。 | `COLOR_RGB` | 被 `scene_gen/envs/generated_scene.py:_apply_color_override` |
-| `scene_gen/prompts/parse_scene.md` | provider 路径的双语 LLM prompt 模板。 |—| rule-based CLI 不读它；仅 `StructuredSceneProvider` 用 |
+| `scene_gen/prompts/{llm_objects,llm_relations}.md` | 两阶段 LLM 语义提取的 active prompt；`parse_scene.md` 是未加载的旧单阶段模板。 | object/attribute contract、topology/lateral contract | 仅 `LLMSceneProvider` 初始化时读取并哈希；rule-based CLI 不读 |
 
 ## `script/`
 
 | 重要代码 | 功能 | 关键符号 | 调用方 / 使用方 |
 | --- | --- | --- | --- |
-| `generate_scene.py` | 编译 CLI：`text -> ResolvedSceneSpec` 包 + 静态 `validation_report.json`。 | `main`、`--prompt`/`--seed`/`--asset-catalog`/`--out-root`/`--generate-missing-assets`/`--generated-objects-root` | 仓库 README「Compile」配方；CLI 表面变更须用 `python script/generate_scene.py --help` 核验 |
+| `generate_scene.py` | 编译 CLI：`text -> ResolvedSceneSpec` 包 + 静态 `validation_report.json`；默认 `rule`，显式 `llm` 才访问 provider。 | `main`、`--provider {rule,llm}`、`--llm-config`/`--llm-profile`、`_write_input_failure`、原有 compile flags | LLM 成功时将 `llm_parse_evidence.json` 纳入 manifest；提取/grounding 失败写分阶段结构化报告；用 `--help` 核验 |
 | `run_scene_runtime.py` | SAPIEN/RoboTwin 物理回放 + runtime evidence 采集 + runtime validator。 | `main`、`load_robotwin_args`、`summarize_contacts`、`runtime_support_margin`、`runtime_inside_contained`、`runtime_relation_results`、`head_camera_arrays`、`--precheck-steps`/`--settle-steps`/`--contact-window-steps`/`--video-frames`/`--fps`/`--task-config`/`--robotwin-root` | 需要 RoboTwin checkout；`--precheck-steps 0` 默认有意为之 |
 | `run_100_seed_acceptance.py` | 100-seed 验收批量运行；可选 `--runtime` 触发 SAPIEN。 | `--seed-count`、`--video-seeds`、`--runtime`/`--robotwin-root` | 主路径之上的薄编排 |
 | `run_prompt_matrix.py` | committed prompt 矩阵跨 seed 跑；可选运行时。 | `--matrix tests/fixtures/prompt_matrix.json`、`--runtime-all-seeds`、`--report` | 主路径之上的薄编排 |
@@ -57,6 +59,7 @@
 | --- | --- | --- | --- |
 | `tests/scene_gen/test_schema.py` | 禁用键、唯一性、跨字段不变量、关系成环、articulation 语义、JSON schema 暴露面。 | `test_scene_spec_rejects_backend_fields`、`test_scene_spec_rejects_missing_support_and_relation_cycles`、`test_scene_spec_accepts_nested_support_and_rejects_support_cycles`、`test_json_schema_exposes_only_semantic_scene_fields` | 改 `schema.py` 先改 / 先跑这里 |
 | `tests/scene_gen/test_parser.py` | golden 双语 prompt 稳定性 + 反向拒绝 + 方向/距离语义 + provider 反走私。 | `test_all_bilingual_golden_prompts_are_stable_and_schema_valid`、`test_all_invalid_golden_prompts_are_rejected`、`test_provider_payload_cannot_smuggle_backend_fields_or_change_request`、`test_parser_supports_chinese_stack_inside_and_articulation` | 改 `parser.py` 先跑这里 |
+| `tests/scene_gen/test_llm_provider.py` | 两阶段提取、严格清洗、语义一致性、配置/endpoint/密钥安全、重试、缓存、证据绑定与 CLI 成败。 | `test_fake_transport_runs_two_stages_and_cleans_attributes_and_regions`、`test_cache_hit_skips_transport_and_cache_identity_excludes_api_key`、`test_llm_cli_success_hash_binds_stable_parse_evidence` | 全部使用 fake transport 或预建缓存，不访问真实服务 |
 | `tests/scene_gen/test_catalog.py` | 真实路径扫描可复现；缺碰撞/缺稳定朝向必拒；嵌套 articulation 与关节限位。 | `test_catalog_scans_real_paths_and_is_reproducible`、`test_catalog_requires_collision_dimensions_and_stable_pose`、`test_catalog_scans_nested_articulated_models_and_joint_limits` | 改 `catalog.py` 或 override 先跑 |
 | `tests/scene_gen/test_grounding.py` | grounding 选真实可碰撞模型；同 catalog+seed 必复现。 | `test_grounding_selects_real_usable_models_without_inventing_ids`、`test_grounding_is_reproducible_for_fixed_catalog_query_and_seed` | 改 `grounding.py` 先跑 |
 | `tests/scene_gen/test_solver.py` | 求解可复现；保留真实绝对路径；满足全部几何关系；100-seed 稳定性门槛；不可行工作区失败带机读 trace；articulation qpos 映射。 | `test_solver_is_deterministic_and_preserves_real_asset_paths`、`test_solver_meets_all_geometric_relations`、`test_fixed_100_seed_gate_passes_for_the_declared_can_basket_case`、`test_impossible_workspace_fails_with_bounded_machine_readable_trace`、`test_solver_rejects_a_source_that_cannot_fit_the_stable_support_surface`、`test_solver_maps_semantic_articulation_to_all_movable_joint_qpos` | 改 `solver.py` 或 `support_geometry.py` 先跑这里 |
@@ -101,9 +104,9 @@
 
 ## 覆盖范围
 
-覆盖：稳定核心四区全部进地图——`scene_gen/`、`script/`、`demo/`、`tests/`；平台总览登记 `self_improving/`、`apps/` 与 `external/` 的边界。`self_improving/legacy/robotwin_text2env_alt/` 是只读历史，`apps/pearl_evidence_portal/` 是呈现层；两者都不能覆盖 `scene_gen/` 的当前行为。`scene_gen/envs/generated_scene.py` 与 `scene_gen/prompts/parse_scene.md` 也属 `scene_gen/` 并已登记。
+覆盖：稳定核心四区全部进地图——`scene_gen/`、`script/`、`demo/`、`tests/`；平台总览登记 `self_improving/`、`apps/` 与 `external/` 的边界。`self_improving/legacy/robotwin_text2env_alt/` 是只读历史，`apps/pearl_evidence_portal/` 是呈现层；两者都不能覆盖 `scene_gen/` 的当前行为。LLM provider、确定性语义检查、两个 active prompt 及 fake-transport 测试均已登记；`parse_scene.md` 仅作为未加载旧模板保留。
 
-摘要但不逐文件追踪：`scene_gen/prompts/` 的 prompt 模板（provider 路径用，rule-based CLI 不读）、`demo/static/` 的前端资产（薄呈现层，不含流水线逻辑）、`tests/fixtures/` 的 JSON 内部结构（fixture 稳定，扩展而非全文展示）。
+摘要但不逐 prompt 逐句追踪：`scene_gen/prompts/` 的 active 两阶段模板（仅 LLM provider 读取）、`demo/static/` 的前端资产（薄呈现层，不含流水线逻辑）、`tests/fixtures/` 的 JSON 内部结构（fixture 稳定，扩展而非全文展示）。
 
 相邻但未追踪的路径：`script/run_100_seed_acceptance.py`、`script/run_prompt_matrix.py`、`script/build_stage5_report.py`、`scene_gen/acceptance.py` 都是主路径之上的批量/聚合层，登记在表中但机制不重述——它们编主路径的多次复刻。`scene_gen/rendered_critic.py` 与 `script/run_rendered_critic.py` 的可选 VLM 渲染评判属相邻但显式排除路径——它不产物理证据。`.github/` 工作流文件未列：CI 配置非本指南作用域。
 

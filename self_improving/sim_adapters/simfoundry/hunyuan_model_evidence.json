@@ -1,0 +1,16 @@
+{
+  "scope": "offline shape/texture model initialization only; no mesh generated",
+  "success": true,
+  "seconds": 39.14,
+  "torch": "2.7.0+cu128",
+  "peak_gpu_allocated_gib": 6.86,
+  "upstream_commit": "9e34ebefcd020583fbb755a8b57268dce78eca26",
+  "environment": "hunyuan",
+  "offline": true,
+  "low_vram": true,
+  "compatibility_initialization": "upstream stage 7 torchvision_fix.apply_fix()",
+  "model_revisions": {
+    "tencent/Hunyuan3D-2.1": "0b94677654c57bb9a6b6845cd7b704ccf551d327",
+    "facebook/dinov2-giant": "611a9d42f2335e0f921f1e313ad3c1b7178d206d"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "simfoundry.reproduction_evidence.v1",
+  "date": "2026-09-07",
+  "upstream_commit": "9e34ebefcd020583fbb755a8b57268dce78eca26",
+  "input": "external/SimFoundry/docs/assets/example_videos/Fruits.mp4",
+  "input_sha256": "a9c099cea15ec73bc203cff0925aa88f166acc2c75e672d9ff89d3bb34169b4d",
+  "output": "data/simfoundry/fruits_preprocess_20260907",
+  "stage_1b_success": true,
+  "processed_video_sha256": "08bb42055456f7ad7f17cfb05470fe2e8f980ab921a8f73a425b901200981662",
+  "decoded_video_total_frames": 452,
+  "decoded_video_unique_frames": 452,
+  "extracted_png_frames": 452,
+  "subsampled_png_frames": 15,
+  "stage_wall_seconds": 9.528975703055039,
+  "cuda_probe": {
+    "torch": "2.7.0+cu128",
+    "device": "NVIDIA GeForce RTX 5090",
+    "cuda_available": true,
+    "gpu_tensor_sum": 32.0
+  },
+  "reconstruction": "not_run",
+  "omnigibson_smoke": "not_run",
+  "core_physics_acceptance": "not_evaluated"
+}

@@ -1,0 +1,167 @@
+{
+  "date": "2026-09-07",
+  "scope": "Fruits video reconstruction and native OmniGibson random-action smoke; not core physics acceptance",
+  "upstream_commit": "9e34ebefcd020583fbb755a8b57268dce78eca26",
+  "success": true,
+  "input_video": {
+    "path": "external/SimFoundry/docs/assets/example_videos/Fruits.mp4",
+    "sha256": "a9c099cea15ec73bc203cff0925aa88f166acc2c75e672d9ff89d3bb34169b4d",
+    "bytes": 1733022
+  },
+  "scene": {
+    "path": "data/simfoundry/fruits_da3_20260907/s14_og/reconstructed_og_scene.json",
+    "sha256": "bf4d2b32933d368850ccb0641d1817b1c5d7076680ee46d5437ad2242b73ec40",
+    "bytes": 20842
+  },
+  "preview": {
+    "path": "data/simfoundry/fruits_da3_20260907/s14_og/reconstructed_scene.png",
+    "sha256": "0fd268f9db794e937954baad92d74afc7d014601bd225e9645c12d43173c7808",
+    "bytes": 187734
+  },
+  "reconstructed_object_count": 7,
+  "stages": [
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s10_compile/stage_info.json",
+      "sha256": "f33f1bbea3e56c7147ce55bb7602561653fecd1e840f4a324d0095001a612248",
+      "bytes": 238,
+      "stage": "s10_compile",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s11_sim/stage_info.json",
+      "sha256": "c9ee6cb77628c19df46387ec1b2165515403c0207463547e9daefb0fc5002532",
+      "bytes": 331,
+      "stage": "s11_sim",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s12_physics/stage_info.json",
+      "sha256": "b709946156f90ad636a66bdeb7dab37d03952f163ffa982a9c1ad692ec6eb56e",
+      "bytes": 197,
+      "stage": "s12_physics",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s13_usd/stage_info.json",
+      "sha256": "033ba48f1dfcc6f3b788da00dea404b8383bc5653ad845345c1111a3fb56f4a5",
+      "bytes": 270,
+      "stage": "s13_usd",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s14_og/stage_info.json",
+      "sha256": "8f29d2bf19ee25a5707c9b22c2f10b37eec34166ab1da352097d68f4a9d20203",
+      "bytes": 1624,
+      "stage": "s14_og",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s1_video/stage_info.json",
+      "sha256": "c6a30d439b2f8d45393175d292a7ce9b735a7deecb2b9567365b9aaf37443eff",
+      "bytes": 424,
+      "stage": "s1_video",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s2_da/stage_info.json",
+      "sha256": "d4f9b12fe865a691746d5078282d8497e9873f243b0d32efb5083cac91079d39",
+      "bytes": 476,
+      "stage": "s2_da",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s3_ground/stage_info.json",
+      "sha256": "1f5ba5b4fb26cb0fcc04634959a233d890a8dae3a10dd584eb6f574110b9f400",
+      "bytes": 1118,
+      "stage": "s3_ground",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s4_frame/stage_info.json",
+      "sha256": "fa7e88ef0a74f7dd736d81ffc66a1bf7244a99d8e4c132106439187860727308",
+      "bytes": 240,
+      "stage": "s4_frame",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s5_scene/stage_info.json",
+      "sha256": "ce0f6120a2889fe7da212052fbef9e80fde187fad62f4ad963661cc14066e82d",
+      "bytes": 1084,
+      "stage": "s5_scene",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s6_upsample/stage_info.json",
+      "sha256": "a96f9dbbdc100bf94524d70f2c7cee3e3e1534445bd472b8d2434776f613ad71",
+      "bytes": 432,
+      "stage": "s6_upsample",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s7_mesh/stage_info.json",
+      "sha256": "43d6943bc0943e0ffbdff128019be646fea2645f33738b5318b9ecc9d3a5f2d3",
+      "bytes": 465,
+      "stage": "s7_mesh",
+      "success": true
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s8_pose/stage_info.json",
+      "sha256": "0ce535580475e1b7e3803f1dc8d016d0c2921cc671d779598990c704ee763e35",
+      "bytes": 626,
+      "stage": "s8_pose",
+      "success": true
+    }
+  ],
+  "optional_articulation_stage_9": "not_run",
+  "reconstruction_stages_5_to_14_wall_time_s": 3476.421808296116,
+  "reconstruction_exit_code": 0,
+  "reconstruction_log": {
+    "path": "logs/simfoundry/fruits-full.log",
+    "sha256": "ad5680645e594606306e0f20dee2fd8b6ccccd955073874ee227f78c18f535ca",
+    "bytes": 777326
+  },
+  "settings": {
+    "ground_frame_selection": "heuristic",
+    "selected_image_index": 11,
+    "text_model": "gemini-2.5-flash",
+    "image_model": "gemini-3-pro-image",
+    "service_base_url": "https://api2.aigcbest.top",
+    "nonstream_text_adapter": true,
+    "low_vram": true,
+    "streaming_pipeline": false,
+    "image_validity_recheck": false
+  },
+  "smoke": {
+    "exit_code": 0,
+    "action_steps": 120,
+    "action_frequency_hz": 15,
+    "physics_frequency_hz": 120,
+    "wall_time_s": 55.90885322378017,
+    "video": {
+      "path": "data/simfoundry/fruits_da3_20260907/application_smoke/random_action_smoke.mp4",
+      "sha256": "14a3708875ab4e2058f8ea7e5aa36c90496bfb167917f8143b01367c7e75234e",
+      "bytes": 1024828
+    },
+    "video_fps": 15.0,
+    "total_frames": 121,
+    "unique_decoded_frames": 121,
+    "frame_shape_hwc": [
+      720,
+      3280,
+      3
+    ],
+    "scene_sha256": "bf4d2b32933d368850ccb0641d1817b1c5d7076680ee46d5437ad2242b73ec40",
+    "log": {
+      "path": "logs/simfoundry/fruits-application-smoke-data.log",
+      "sha256": "d48358b0c5dfe35276ec22294b51c7016143b50c437f8629e74688bf97ca1f2a",
+      "bytes": 53272
+    }
+  },
+  "artifact_location_note": "Outputs now reside under data/simfoundry. Original stage metadata retains historical output/simfoundry paths. Final scene JSON bytes were unchanged and successfully loaded from data. Top-level pipeline_run_report.json now describes the latest C smoke invocation.",
+  "core_physics_acceptance": "not_evaluated",
+  "reconstruction_quality_metrics": "not_evaluated",
+  "limitations": [
+    "Stage 12 stabilization resets velocities; it is not free-dynamics validation.",
+    "Random actions verify loading, stepping and sequential rendering; no task success or support/containment acceptance asserted."
+  ]
+}

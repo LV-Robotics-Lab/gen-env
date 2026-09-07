@@ -1,0 +1,4 @@
+# Independent selection workflow; core dependencies come from the repository install.
+# Use an environment separate from the older qwen-specific `vlm` extra if needed.
+transformers==5.3.0
+torch>=2.6,<3

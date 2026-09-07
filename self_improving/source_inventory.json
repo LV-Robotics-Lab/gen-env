@@ -198,6 +198,22 @@
       "source_path": "/home/jingxiang/workspace/openxsim-validation/third_party/MetaSim"
     },
     {
+      "name": "genesis-world",
+      "repository": "Genesis-Embodied-AI/genesis-world",
+      "destination": "external/genesis-world",
+      "commit": "0e74bf392781884ccad765c3f344419c86b872ca",
+      "purpose": "optional OpenXSim render-only backend"
+    },
+    {
+      "name": "SimFoundry",
+      "repository": "NVlabs/SimFoundry",
+      "destination": "external/SimFoundry",
+      "commit": "9e34ebefcd020583fbb755a8b57268dce78eca26",
+      "purpose": "video-to-OmniGibson reconstruction via an isolated platform CLI",
+      "adapter": "self_improving/sim_adapters/simfoundry",
+      "excluded": ["conda environments", "deps", "checkpoints", "generated scenes", "credentials"]
+    },
+    {
       "name": "retired-AgenticSim",
       "source_commit": "6d952560870b0a9b71f707f0476d28425bfab256",
       "replacement": "LV-Robotics-Lab/TacHarness",

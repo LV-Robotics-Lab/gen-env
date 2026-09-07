@@ -57,7 +57,7 @@ for index in range(total_steps):
 | Check | 静态物体（`is_static=True`）| 动态物体（`is_static=False`）|
 | --- | --- | --- |
 | translation_drift | ≤ 20 mm | not_applicable |
-| rotation_drift | ≤ 5° | not_applicable |
+| rotation_drift | ≤ 3° | not_applicable |
 | resolved_translation_error | ≤ 20 mm | not_applicable |
 | resolved_rotation_error | ≤ 5° | not_applicable |
 | support_contact | 走 `fixed_static_pose` 模式：`is_static ∧ on_table ∧ support_mode=fixed_static_pose ∧ not_dropped`，否则须 physical_support | 须 `support_contact ∧ target == support_target ∧ contact_fraction ≥ 0.8` |

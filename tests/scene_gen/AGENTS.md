@@ -4,15 +4,17 @@
 # scene_gen
 
 ## Purpose（用途）
-`scene_gen/` 的单元与攻击测试：每个模块一个 `test_<module>.py`，外加 acceptance/matrix runner。为每个已发现的误报模式（contact、support、containment、visibility、video）保留攻击测试。
+`scene_gen/` 的单元与攻击测试：每个模块一个 `test_<module>.py`，外加 LLM provider、acceptance/matrix runner。为每个已发现的误报模式（文本字段走私、语义遗漏，以及 contact、support、containment、visibility、video）保留攻击测试。
 
 ## Key Files（关键文件）
 | File | Description |
 |------|-------------|
 | `test_schema.py` | pydantic `SceneSpec` / `ResolvedSceneSpec` 契约测试 |
 | `test_parser.py` | 受限中/英解析的 parser + golden/攻击测试 |
+| `test_llm_provider.py` | 两阶段 LLM 提取、配置、重试、缓存、语义清洗、证据绑定与 CLI 失败测试（fake transport，无网络） |
 | `test_catalog.py` | 资产目录构建 + override 行为 |
 | `test_grounding.py` | RoboTwin 资产 grounding 测试 |
+| `test_object_records.py` | 对象提前导出、全量检索、缺失/不可用区分、失败保留和输出复用攻击测试 |
 | `test_solver.py` | 目标局部 support/containment 求解器测试 |
 | `test_builder_validator.py` | builder + 静态 validator（哈希绑定包）测试 |
 | `test_asset_generator.py` | 确定性几何代理生成测试 |
@@ -30,6 +32,7 @@
 ### Working In This Directory（在本目录工作）
 - 为每个已发现的误报模式保留攻击测试（通过 `is_static` 堆叠、无接触 pose、外层 AABB 重叠、仅起止截图验收等）。
 - 测试必须基于 fixture 且无需 RoboTwin checkout；用 `tests/fixtures/`。需要真实 SAPIEN 的明确标注。
+- LLM 测试必须使用 fake transport 或预建缓存；CI 不访问模型服务、不读取真实密钥。
 
 ### Testing Requirements（测试要求）
 - `pytest -q tests/scene_gen`（或从根跑 `pytest -q`）。

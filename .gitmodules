@@ -9,3 +9,9 @@
 [submodule "external/MetaSim"]
 	path = external/MetaSim
 	url = https://github.com/RoboVerseOrg/MetaSim.git
+[submodule "external/genesis-world"]
+	path = external/genesis-world
+	url = https://github.com/Genesis-Embodied-AI/genesis-world.git
+[submodule "external/SimFoundry"]
+	path = external/SimFoundry
+	url = https://github.com/NVlabs/SimFoundry.git

@@ -1,0 +1,24 @@
+# Copy to configs/llm.yaml for local use. That file is git-ignored.
+# Set api_key only in that ignored local copy; never commit a real key.
+# Replace api_key with api_key_env if environment-based credentials are preferred.
+
+active_profile: openai
+profiles:
+  openai:
+    endpoint: https://api.openai.com/v1
+    model: gpt-5.5
+    api_mode: responses
+    api_key: "replace-with-your-openai-api-key"
+    timeout_s: 120
+    max_attempts: 3
+    cache_dir: data/scene_gen/parse_cache
+
+  moonshot:
+    endpoint: https://api.moonshot.cn/v1
+    model: kimi-k2.5
+    api_mode: chat
+    api_key: "replace-with-your-moonshot-api-key"
+    temperature: 1
+    timeout_s: 120
+    max_attempts: 3
+    cache_dir: data/scene_gen/parse_cache

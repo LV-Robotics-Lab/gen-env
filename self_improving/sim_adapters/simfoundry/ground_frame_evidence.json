@@ -1,0 +1,63 @@
+{
+  "scope": "ground-plane segmentation and world-coordinate estimation only; no reconstructed simulation scene",
+  "success": true,
+  "upstream_commit": "9e34ebefcd020583fbb755a8b57268dce78eca26",
+  "scene_path": "data/simfoundry/fruits_da3_20260907",
+  "stages": [
+    "3",
+    "4"
+  ],
+  "frame_selection_mode": "heuristic (explicit override; default is hybrid)",
+  "selected_image_index": 11,
+  "cam2world_finite": true,
+  "cam2world": [
+    [
+      0.9935666731757888,
+      -0.11324869074031325,
+      0.0,
+      0.026220642438254897
+    ],
+    [
+      -0.08825221812134389,
+      -0.7742646929161767,
+      0.6266783316024906,
+      -0.6469396580990833
+    ],
+    [
+      -0.07097050056930594,
+      -0.6226467050816404,
+      -0.7792780432553703,
+      0.7435185201846353
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "files": [
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s4_frame/image_11_cam2world.npy",
+      "sha256": "a35d6d23b288b79c9953d03c6ed01d7ab2148467b32f5439f4f2c6f115fee295",
+      "bytes": 256
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s3_ground/frame_selection.json",
+      "sha256": "2b11ed12dc15c40e3c7febe74c6d99ab0b1faa10293402ac6a75728a3d92ead3",
+      "bytes": 11496
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s3_ground/image_11_floor_info.json",
+      "sha256": "d8c278107b1d686a359e7ae6b88f3e62cac21d19ca4427403ada30bf6cb47d97",
+      "bytes": 253
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s4_frame/image_11_pc_denoised.ply",
+      "sha256": "f317fbe125e1c49dd1e7540065b7e6df6c91e6bacd9b083d8ec0082408c62595",
+      "bytes": 3035495
+    }
+  ],
+  "complete_video_to_scene": "not_run",
+  "core_physics_acceptance": "not_evaluated"
+}

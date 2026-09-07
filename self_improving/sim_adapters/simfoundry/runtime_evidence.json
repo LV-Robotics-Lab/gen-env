@@ -1,0 +1,21 @@
+{
+  "scope": "native primitive runtime smoke; not video reconstruction or core acceptance",
+  "omnigibson_version": "3.8.0",
+  "torch_version": "2.7.0+cu128",
+  "steps": 120,
+  "initial_position": [
+    0.0,
+    0.0,
+    0.7836501002311707
+  ],
+  "final_position": [
+    -3.4305535336898174e-06,
+    6.885786660859594e-06,
+    0.05000626668334007
+  ],
+  "elapsed_seconds": 178.97,
+  "success": true,
+  "upstream_commit": "9e34ebefcd020583fbb755a8b57268dce78eca26",
+  "video_reconstruction": "not_run",
+  "core_physics_acceptance": "not_evaluated"
+}

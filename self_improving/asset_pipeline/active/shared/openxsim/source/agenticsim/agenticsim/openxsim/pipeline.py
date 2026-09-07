@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -198,10 +198,15 @@ class OpenXSimPipeline:
         source_backend: str | None = None,
         strict: bool = False,
     ) -> tuple[EnvironmentPackage, dict[str, CompileResult], dict[str, ConformanceReport]]:
-        package = import_environment(source_path, source_backend=source_backend)
+        backend_names = tuple(dict.fromkeys(value.lower() for value in target_backends))
+        package = replace(
+            import_environment(source_path, source_backend=source_backend),
+            target_backends=backend_names,
+        )
+        package.validate()
         run_dir = self.output_root / package.package_id / "transfer"
         package.write_json(run_dir / "imported_environment_package.json")
-        results = compile_package(package, run_dir / "compiled", target_backends, strict=strict)
+        results = compile_package(package, run_dir / "compiled", backend_names, strict=strict)
         reports: dict[str, ConformanceReport] = {}
         for backend, result in results.items():
             report = evaluate_conformance(

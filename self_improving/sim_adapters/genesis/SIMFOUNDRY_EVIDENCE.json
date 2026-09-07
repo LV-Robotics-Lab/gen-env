@@ -1,0 +1,352 @@
+{
+  "date": "2026-09-07",
+  "scope": "standard single rigid assets; no source scene migration or core physics acceptance",
+  "library": {
+    "path": "assets/genesis/simfoundry_fruits_v2/library.json",
+    "sha256": "eb5743d033624648560784f7e9b795c796c51e0c7ae38869f88e93d50b941537",
+    "bytes": 2721
+  },
+  "preview_index": {
+    "path": "assets/genesis/simfoundry_previews_v2/asset_index.json",
+    "sha256": "260c18e3a78ce5aba609f286a5073177bef9fb7db5953c0116ca88d03c5103a7",
+    "bytes": 17335
+  },
+  "union_index": {
+    "path": "assets/genesis/clip_union_simfoundry_v1/index.json",
+    "sha256": "d41d1802a4ee23d7b0f97e31be1172537591a584ac706b4f60158e65de4f122e",
+    "bytes": 400353
+  },
+  "union_asset_count": 81,
+  "imported": 7,
+  "preview_passed": 7,
+  "load_audit_passed": 7,
+  "physics_completed": 7,
+  "physics_passed": 0,
+  "physics_failed": 7,
+  "records": [
+    {
+      "object_id": "iter_0",
+      "category": "yellow_pear",
+      "package": {
+        "path": "assets/genesis/simfoundry_fruits_v2/packages/simfoundry_yellow_pear_573c15a56cdd6630/asset.json",
+        "sha256": "47b2bfe6585739d01ef9d68852753efea189f8156d56e1fb05cae6994025ef1e",
+        "bytes": 6647
+      },
+      "preview": {
+        "path": "assets/genesis/simfoundry_previews_v2/previews/simfoundry_yellow_pear_573c15a56cdd6630/contact_sheet.png",
+        "sha256": "79520087ff65d564df58efb7af1f07a12274cc3ed972f4fe281d067aa7ba2ff4",
+        "bytes": 292022
+      },
+      "physics_result": {
+        "path": "data/simfoundry_genesis/fruits_acceptance_v2/iter_0/physics_result.json",
+        "sha256": "85915fb7a983327b8cf0e922d4ae24b03efeff69c87952020e35ee2d67a0d352",
+        "bytes": 2610
+      },
+      "exit_code": 2,
+      "failed_checks": [
+        {
+          "limit": 0.001,
+          "name": "penetration_m",
+          "observed": 0.0013011249247938395,
+          "passed": false
+        }
+      ],
+      "video": {
+        "encoded_input_unique": 100,
+        "fps": 25,
+        "sampled_every_steps": 10,
+        "total_frames": 101,
+        "unique_frames": 75
+      },
+      "load_errors": {
+        "collision_error_m": 5.057737537040145e-09,
+        "com_error_m": 5.2262294752275507e-11,
+        "inertia_relative_error": 1.6510832944828656e-08,
+        "mass_relative_error": 1.2548346280189847e-08,
+        "visual_error_m": 2.131821677556565e-09
+      }
+    },
+    {
+      "object_id": "iter_1",
+      "category": "red_apple",
+      "package": {
+        "path": "assets/genesis/simfoundry_fruits_v2/packages/simfoundry_red_apple_4b076d03ec629c7e/asset.json",
+        "sha256": "41cd000645f7b32a50f54759747de94015fdf239dd75fec0a06ab80ba7444cc9",
+        "bytes": 16934
+      },
+      "preview": {
+        "path": "assets/genesis/simfoundry_previews_v2/previews/simfoundry_red_apple_4b076d03ec629c7e/contact_sheet.png",
+        "sha256": "cb514cb0e0d441037a339c21ba4d6ed11f2c3566e5cd0123b2b506ad29c73f6a",
+        "bytes": 372537
+      },
+      "physics_result": {
+        "path": "data/simfoundry_genesis/fruits_acceptance_v2/iter_1/physics_result.json",
+        "sha256": "3849e40dcb593af0e8ddf3a79982ce5a7eab2eaa2f03739b66e3a8acf4eb6546",
+        "bytes": 2609
+      },
+      "exit_code": 2,
+      "failed_checks": [
+        {
+          "limit": 0.001,
+          "name": "penetration_m",
+          "observed": 0.0013011200353503227,
+          "passed": false
+        }
+      ],
+      "video": {
+        "encoded_input_unique": 101,
+        "fps": 25,
+        "sampled_every_steps": 10,
+        "total_frames": 101,
+        "unique_frames": 71
+      },
+      "load_errors": {
+        "collision_error_m": 5.222671498094336e-09,
+        "com_error_m": 4.6164769056111776e-11,
+        "inertia_relative_error": 1.946072150067117e-08,
+        "mass_relative_error": 3.806079731838039e-08,
+        "visual_error_m": 2.0576058887700382e-09
+      }
+    },
+    {
+      "object_id": "iter_2",
+      "category": "yellow_banana",
+      "package": {
+        "path": "assets/genesis/simfoundry_fruits_v2/packages/simfoundry_yellow_banana_42ae6f9268788191/asset.json",
+        "sha256": "f6b3c37c1f08c8cdae6e1db759c2b23dd4106dd0e1bcdefa8c84a62471d6b4c8",
+        "bytes": 8101
+      },
+      "preview": {
+        "path": "assets/genesis/simfoundry_previews_v2/previews/simfoundry_yellow_banana_42ae6f9268788191/contact_sheet.png",
+        "sha256": "bb35b52070977f1c29901e6df9e3517da055f1ec27c48e8890311121515486aa",
+        "bytes": 197486
+      },
+      "physics_result": {
+        "path": "data/simfoundry_genesis/fruits_acceptance_v2/iter_2/physics_result.json",
+        "sha256": "56e3532d241c072e26c3ec92bf89cf6bdb0f789fb67b52f787d0c25951261ea3",
+        "bytes": 2621
+      },
+      "exit_code": 2,
+      "failed_checks": [
+        {
+          "limit": 0.05,
+          "name": "angular_speed_radps",
+          "observed": 0.19587626389095653,
+          "passed": false
+        },
+        {
+          "limit": 0.001,
+          "name": "penetration_m",
+          "observed": 0.00226728618144989,
+          "passed": false
+        }
+      ],
+      "video": {
+        "encoded_input_unique": 101,
+        "fps": 25,
+        "sampled_every_steps": 10,
+        "total_frames": 101,
+        "unique_frames": 99
+      },
+      "load_errors": {
+        "collision_error_m": 9.302121962695503e-09,
+        "com_error_m": 2.2677645351854014e-10,
+        "inertia_relative_error": 6.023129091708207e-08,
+        "mass_relative_error": 2.7650294769589258e-08,
+        "visual_error_m": 4.138329710391468e-09
+      }
+    },
+    {
+      "object_id": "iter_3",
+      "category": "orange_square_plate",
+      "package": {
+        "path": "assets/genesis/simfoundry_fruits_v2/packages/simfoundry_orange_square_plate_bf66625b4264a11f/asset.json",
+        "sha256": "f01a517098efb3b470a7a601646d6782fa29aec0ebf1c9ef9cc887533e0dc0b8",
+        "bytes": 21259
+      },
+      "preview": {
+        "path": "assets/genesis/simfoundry_previews_v2/previews/simfoundry_orange_square_plate_bf66625b4264a11f/contact_sheet.png",
+        "sha256": "032522f2dd81cf1a197af65f533140b04fc65e941b5c04cbd6a2c11ce0eb69f9",
+        "bytes": 203016
+      },
+      "physics_result": {
+        "path": "data/simfoundry_genesis/fruits_acceptance_v2/iter_3/physics_result.json",
+        "sha256": "56a2f92f3cfc174814e8c07615263ea6bb4d91ab0a0407950c0ac60393940ee4",
+        "bytes": 2610
+      },
+      "exit_code": 2,
+      "failed_checks": [
+        {
+          "limit": 0.001,
+          "name": "penetration_m",
+          "observed": 0.001260865479707718,
+          "passed": false
+        }
+      ],
+      "video": {
+        "encoded_input_unique": 100,
+        "fps": 25,
+        "sampled_every_steps": 10,
+        "total_frames": 101,
+        "unique_frames": 56
+      },
+      "load_errors": {
+        "collision_error_m": 1.4005675142218966e-08,
+        "com_error_m": 2.278336460465047e-10,
+        "inertia_relative_error": 5.382744622694193e-08,
+        "mass_relative_error": 3.086669102358203e-08,
+        "visual_error_m": 5.266805909399157e-09
+      }
+    },
+    {
+      "object_id": "iter_4",
+      "category": "orange_fruit",
+      "package": {
+        "path": "assets/genesis/simfoundry_fruits_v2/packages/simfoundry_orange_fruit_4ed8d884ca6fec0b/asset.json",
+        "sha256": "344b9a4a74abb6e9027dc611da21ea4c7aa8a73aad63346de23885f85d742e56",
+        "bytes": 9459
+      },
+      "preview": {
+        "path": "assets/genesis/simfoundry_previews_v2/previews/simfoundry_orange_fruit_4ed8d884ca6fec0b/contact_sheet.png",
+        "sha256": "0da341b4bebee8afbd01d2edf5bc9bcef60d64ade8085690ac2ffaf6bfd036d6",
+        "bytes": 270769
+      },
+      "physics_result": {
+        "path": "data/simfoundry_genesis/fruits_acceptance_v2/iter_4/physics_result.json",
+        "sha256": "6abad6ca94e86c048d8cb0e835ffdbcb4db185d68efd46bfdbe3d022bdf457d6",
+        "bytes": 2610
+      },
+      "exit_code": 2,
+      "failed_checks": [
+        {
+          "limit": 0.001,
+          "name": "penetration_m",
+          "observed": 0.0012023620074614882,
+          "passed": false
+        }
+      ],
+      "video": {
+        "encoded_input_unique": 101,
+        "fps": 25,
+        "sampled_every_steps": 10,
+        "total_frames": 101,
+        "unique_frames": 57
+      },
+      "load_errors": {
+        "collision_error_m": 5.790010499815508e-09,
+        "com_error_m": 3.2039620739485186e-11,
+        "inertia_relative_error": 2.6845440759070023e-08,
+        "mass_relative_error": 3.973642980316004e-08,
+        "visual_error_m": 1.9826707671612866e-09
+      }
+    },
+    {
+      "object_id": "iter_5",
+      "category": "teal_square_plate",
+      "package": {
+        "path": "assets/genesis/simfoundry_fruits_v2/packages/simfoundry_teal_square_plate_6059e714c3e6aa08/asset.json",
+        "sha256": "7ee1d59f2f288c64489eb62129dc053f9ad5aec71a74cf57608122bc8256b7c2",
+        "bytes": 20370
+      },
+      "preview": {
+        "path": "assets/genesis/simfoundry_previews_v2/previews/simfoundry_teal_square_plate_6059e714c3e6aa08/contact_sheet.png",
+        "sha256": "5e8f534aa69136be5b6fb4cd2f9ac9b292520022a8a81e3b26b1466cc2ef23e2",
+        "bytes": 254491
+      },
+      "physics_result": {
+        "path": "data/simfoundry_genesis/fruits_acceptance_v2/iter_5/physics_result.json",
+        "sha256": "274f7826a75653c5f38588d834bcd8bf322185d68e5d7f6a4627c9544308a16d",
+        "bytes": 2608
+      },
+      "exit_code": 2,
+      "failed_checks": [
+        {
+          "limit": 0.001,
+          "name": "penetration_m",
+          "observed": 0.0013011242263019085,
+          "passed": false
+        }
+      ],
+      "video": {
+        "encoded_input_unique": 101,
+        "fps": 25,
+        "sampled_every_steps": 10,
+        "total_frames": 101,
+        "unique_frames": 63
+      },
+      "load_errors": {
+        "collision_error_m": 1.3053483418147428e-08,
+        "com_error_m": 4.460701339553674e-11,
+        "inertia_relative_error": 1.3278610316748368e-07,
+        "mass_relative_error": 3.6679781339510235e-08,
+        "visual_error_m": 5.262180208744491e-09
+      }
+    },
+    {
+      "object_id": "iter_6",
+      "category": "black_rectangular_frame",
+      "package": {
+        "path": "assets/genesis/simfoundry_fruits_v2/packages/simfoundry_black_rectangular_frame_59172e992c871a12/asset.json",
+        "sha256": "e21fbae2b5695e83d061e01b8a539221bc0dcaed0da52c9de084b0524eeadf0a",
+        "bytes": 8425
+      },
+      "preview": {
+        "path": "assets/genesis/simfoundry_previews_v2/previews/simfoundry_black_rectangular_frame_59172e992c871a12/contact_sheet.png",
+        "sha256": "fb3e929372667a67126c5424389a1d3859d13b635650e65c563a136220d0b130",
+        "bytes": 59117
+      },
+      "physics_result": {
+        "path": "data/simfoundry_genesis/fruits_acceptance_v2/iter_6/physics_result.json",
+        "sha256": "b0c0f486a99fcc1772ad63b11de41dd66d5fc55125224ccde12a1d65a3dfde9f",
+        "bytes": 2624
+      },
+      "exit_code": 2,
+      "failed_checks": [
+        {
+          "limit": 0.001,
+          "name": "penetration_m",
+          "observed": 0.0051633380353450775,
+          "passed": false
+        }
+      ],
+      "video": {
+        "encoded_input_unique": 101,
+        "fps": 25,
+        "sampled_every_steps": 10,
+        "total_frames": 101,
+        "unique_frames": 95
+      },
+      "load_errors": {
+        "collision_error_m": 1.8960410368173016e-08,
+        "com_error_m": 5.7347542947033814e-11,
+        "inertia_relative_error": 6.85294286766376e-08,
+        "mass_relative_error": 1.663385437141445e-08,
+        "visual_error_m": 5.42511239472727e-09
+      }
+    }
+  ],
+  "selection_failure": {
+    "path": "data/simfoundry_genesis/selection_failure_v2/run_report.json",
+    "sha256": "09faacf5d5852e10c2bca95192227cf3af00d90ec69d35989d030695e2f0aaca",
+    "bytes": 1989
+  },
+  "selection_test_transport": "real CLIP; cached injected candidate choice; real Genesis; no HTTP VLM call",
+  "portability": {
+    "path": "data/simfoundry_genesis/portability_v1/portability.json",
+    "sha256": "9d6a407271adaedf9c0a35ebb35e1fb557ba70f0baf62d23b5159ba4f4ff367b",
+    "bytes": 105
+  },
+  "control": {
+    "path": "data/simfoundry_genesis/calibration_v1/physics/physics_result.json",
+    "sha256": "eeb4227e4cce899f34302383d90b676f442790bc00b9ca793b3cde1fa3ce302a",
+    "bytes": 2606
+  },
+  "control_note": "Separate authored MJCF fixture with 3 mm contact margin; not a Fruits asset or repaired substitute",
+  "source_files_unchanged": true,
+  "tests": {
+    "root": "363 passed",
+    "genesis_adapter": "388 passed, 44 skipped",
+    "real_control": "1 passed",
+    "lint": "passed"
+  }
+}

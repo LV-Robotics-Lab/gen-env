@@ -1,0 +1,91 @@
+{
+  "scope": "seven Hunyuan textured mesh exports only; not complete scene or physics acceptance",
+  "success": true,
+  "mesh_count": 7,
+  "files": [
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s7_mesh/textured_mesh/hunyuan/iter_0_mesh.glb",
+      "sha256": "b5b562b8f3b7fa394598fc443d9d74096838ed97dca7f3a9c59608ade89743b2",
+      "bytes": 3251112,
+      "geometries": 1,
+      "vertices": 21988,
+      "faces": 40000,
+      "finite_vertices": true,
+      "visual_kinds": [
+        "texture"
+      ]
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s7_mesh/textured_mesh/hunyuan/iter_1_mesh.glb",
+      "sha256": "0693355cd69d279b901e20dec9c1b16c6ebeabf259299714cfeb24029eb3a8ab",
+      "bytes": 3087456,
+      "geometries": 1,
+      "vertices": 21342,
+      "faces": 40000,
+      "finite_vertices": true,
+      "visual_kinds": [
+        "texture"
+      ]
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s7_mesh/textured_mesh/hunyuan/iter_2_mesh.glb",
+      "sha256": "256820c2ed29b76fe5f787a0a5e5e2063a52b17a87049e58a71ed586cc6ecc48",
+      "bytes": 2908996,
+      "geometries": 1,
+      "vertices": 21689,
+      "faces": 40000,
+      "finite_vertices": true,
+      "visual_kinds": [
+        "texture"
+      ]
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s7_mesh/textured_mesh/hunyuan/iter_3_mesh.glb",
+      "sha256": "ce064f8eaebca7150822b9e1af79854fcb221a8b41660a3c7fee87215fb483c1",
+      "bytes": 2668172,
+      "geometries": 1,
+      "vertices": 21768,
+      "faces": 39999,
+      "finite_vertices": true,
+      "visual_kinds": [
+        "texture"
+      ]
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s7_mesh/textured_mesh/hunyuan/iter_4_mesh.glb",
+      "sha256": "018cd15b01abe123c5609b8c0a5ea519d6f0ce9ee9809b48ec7dda9d4e6c28c1",
+      "bytes": 2631308,
+      "geometries": 1,
+      "vertices": 21030,
+      "faces": 40000,
+      "finite_vertices": true,
+      "visual_kinds": [
+        "texture"
+      ]
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s7_mesh/textured_mesh/hunyuan/iter_5_mesh.glb",
+      "sha256": "779f77214c5b89089e608fde17723d411fee0690c099ce9b8f756c2c54e04be7",
+      "bytes": 2778484,
+      "geometries": 1,
+      "vertices": 22197,
+      "faces": 40000,
+      "finite_vertices": true,
+      "visual_kinds": [
+        "texture"
+      ]
+    },
+    {
+      "path": "data/simfoundry/fruits_da3_20260907/s7_mesh/textured_mesh/hunyuan/iter_6_mesh.glb",
+      "sha256": "598b6a4ff1cb0a6a6e510e6149940522f155bbf00a39b1a0ff288195beec129a",
+      "bytes": 2519052,
+      "geometries": 1,
+      "vertices": 23642,
+      "faces": 40000,
+      "finite_vertices": true,
+      "visual_kinds": [
+        "texture"
+      ]
+    }
+  ]
+}

@@ -150,13 +150,39 @@ UNSUPPORTED_ENGLISH_QUANTITIES = {
 
 MAX_SCENE_OBJECTS = 12
 
+_PROMPT_NUMBER = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?"
 
 FORBIDDEN_PROMPT_PATTERNS = (
-    (r"```|\b(?:import|exec|eval)\s*\(|\bdef\s+[a-z_]", "executable code"),
-    (r"(?:^|\s)(?:/[^\s]+|~\/[^\s]+|[a-zA-Z]:\\[^\s]+)", "filesystem path"),
-    (r"\b(?:asset_id|model_id|qpos|quaternion|wxyz|world_xyz)\b", "backend field"),
+    (
+        r"```|\b(?:import|exec|eval|compile)\s*\(|\bdef\s+[a-z_]|"
+        r"\b(?:os|subprocess|pathlib|sys)\.[a-z_][a-z0-9_]*\s*\(|"
+        r"\b(?:print|open|input|getattr|setattr|__import__|system|popen)\s*\(",
+        "executable code",
+    ),
+    (
+        r"\b[a-z][a-z0-9+.-]*://|"
+        r"(?<![a-z0-9])/(?!/)[^\s]+|~/[^\s]+|"
+        r"[a-zA-Z]:[\\/][^\s]+|\$[a-zA-Z_][a-zA-Z0-9_]*[\\/][^\s]+|"
+        r"\\\\[a-zA-Z0-9_.-]+\\[^\s]+|"
+        r"(?:^|\s)(?:(?:\.{1,2}|\.[a-zA-Z0-9_.-]+|"
+        r"[a-zA-Z][a-zA-Z0-9_.-]*)/[^\s/]+(?:/[^\s/]+)*)|"
+        r"\b[a-zA-Z0-9_.-]+\.(?:obj|stl|dae|glb|gltf|urdf|usd|ply|"
+        r"json|ya?ml|py|sh|txt)\b",
+        "filesystem path",
+    ),
+    (
+        r"\b(?:asset|model)[\s_-]*id\b|"
+        r"\b(?:qpos|quaternion|wxyz|world[\s_-]*xyz|"
+        r"position[\s_-]*meters|pose)\b|"
+        r"\b\d{2,}_[a-z][a-z0-9_]*\b",
+        "backend field",
+    ),
     (r"\b[xyz]\s*=\s*-?\d", "world coordinate"),
-    (r"\[\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*,\s*-?\d", "coordinate tuple"),
+    (
+        rf"(?:[\[(]\s*)?{_PROMPT_NUMBER}\s*,\s*{_PROMPT_NUMBER}\s*,"
+        rf"\s*{_PROMPT_NUMBER}(?:\s*[\])])?",
+        "coordinate tuple",
+    ),
 )
 
 UNSUPPORTED_FEATURE_PATTERNS = (
@@ -188,10 +214,23 @@ def _scene_id(request: str) -> str:
     stem = "_".join(words) if words else "scene"
     if not stem[0].isalpha():
         stem = f"scene_{stem}"
-    return f"{stem}_{digest}"[:96]
+    return f"{stem[:85]}_{digest}"
 
 
 def validate_prompt_boundary(request: str) -> None:
+    if not isinstance(request, str) or len(request.strip()) < 3 or len(request) > 2000:
+        raise SceneSpecError("request must be a string containing 3 to 2000 characters")
+    if any(
+        (ord(character) < 32 and character not in "\t\n\r")
+        or ord(character) == 127
+        or character in "\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+        for character in request
+    ):
+        raise SceneSpecError("request contains forbidden control characters")
+    try:
+        request.encode("utf-8")
+    except UnicodeError as exc:
+        raise SceneSpecError("request must be valid UTF-8 text") from exc
     normalized = _normalize(request)
     for pattern, label in FORBIDDEN_PROMPT_PATTERNS:
         if re.search(pattern, normalized, flags=re.IGNORECASE):
@@ -631,6 +670,9 @@ def parse_rule_based(request: str, *, seed: int = 0) -> SceneSpec:
 
 
 def parse_provider_payload(payload: dict[str, Any], *, request: str, seed: int) -> SceneSpec:
+    validate_prompt_boundary(request)
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2_147_483_647:
+        raise SceneSpecError("seed must be an integer in [0, 2147483647]")
     if not isinstance(payload, dict):
         raise SceneSpecError("structured provider output must be a JSON object")
     candidate = dict(payload)
@@ -643,13 +685,31 @@ def parse_provider_payload(payload: dict[str, Any], *, request: str, seed: int) 
         raise SceneSpecError("structured provider changed the user request")
     if spec.seed != seed:
         raise SceneSpecError("structured provider changed the deterministic seed")
-    return spec
+    # Reconstruct caller-owned fields locally. Existing structured providers
+    # may return a complete SceneSpec envelope, but any supplied envelope value
+    # must resolve to the same deterministic/default value as the local one.
+    local = SceneSpec(
+        scene_id=_scene_id(request),
+        request=request,
+        language=_language(request),
+        seed=seed,
+        objects=spec.objects,
+        relations=spec.relations,
+    )
+    provider_values = spec.canonical_dict()
+    local_values = local.canonical_dict()
+    for field in sorted(set(payload) - {"objects", "relations"}):
+        if provider_values[field] != local_values[field]:
+            raise SceneSpecError(f"structured provider changed caller-owned field {field!r}")
+    return local
 
 
 def parse_with_provider(
     provider: StructuredSceneProvider, *, request: str, seed: int = 0
 ) -> SceneSpec:
     validate_prompt_boundary(request)
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2_147_483_647:
+        raise SceneSpecError("seed must be an integer in [0, 2147483647]")
     return parse_provider_payload(
         provider.parse_scene(request=request, seed=seed), request=request, seed=seed
     )

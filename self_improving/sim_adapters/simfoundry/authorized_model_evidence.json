@@ -1,0 +1,101 @@
+[
+  {
+    "repo": "facebook/sam3",
+    "revision": "3c879f39826c281e95690f02c7821c4de09afae7",
+    "files": [
+      {
+        "path": "config.json",
+        "bytes": 25843,
+        "sha256": "4616385e4b21f2e5e22c875b65679185cbccfa95de42542b9166f7dc3d57160f"
+      },
+      {
+        "path": "sam3.pt",
+        "bytes": 3450062241,
+        "sha256": "9999e2341ceef5e136daa386eecb55cb414446a00ac2b55eb2dfd2f7c3cf8c9e"
+      },
+      {
+        "path": "README.md",
+        "bytes": 26038,
+        "sha256": "1ac8a322aa4a797db79cbc334acee7c0cae8635032b71c7d5b23ae63a05f4bd5"
+      },
+      {
+        "path": "LICENSE",
+        "bytes": 7352,
+        "sha256": "bec48f70bd37bf8280a9d1ebf01642d26086f6122ba735baa08fe03c5a6e7448"
+      }
+    ],
+    "bytes": 3450121474,
+    "success": true
+  },
+  {
+    "repo": "briaai/RMBG-2.0",
+    "revision": "5df4c9c76d8170882c34f6986e848ee07fd0ba43",
+    "files": [
+      {
+        "path": "preprocessor_config.json",
+        "bytes": 391,
+        "sha256": "447d9ccb2c4129ab0ca045fc293e7d79dbc45e293ac1e94818d865db77f65a54"
+      },
+      {
+        "path": "config.json",
+        "bytes": 405,
+        "sha256": "c97ea21569daf66b205491a4635147dd3bc42c7c168b89d7d75b53f67ef548ae"
+      },
+      {
+        "path": "birefnet.py",
+        "bytes": 91403,
+        "sha256": "e499d75224b8819e985e68fb78b7a8e8c99316840474e74e16b5529f03ca2860"
+      },
+      {
+        "path": "model.safetensors",
+        "bytes": 884878856,
+        "sha256": "566ed80c3d95f87ada6864d4cbe2290a1c5eb1c7bb0b123e984f60f76b02c3a7"
+      },
+      {
+        "path": "README.md",
+        "bytes": 9392,
+        "sha256": "764d961aebbef88f656cfbf7a2665c2c7cd514fd159f1666d5c184b56b0993ca"
+      },
+      {
+        "path": "BiRefNet_config.py",
+        "bytes": 298,
+        "sha256": "e7b8c2a74f6cea6a59553d517f71d47f2c1d90e670a13416af17c25fe2f3dc52"
+      }
+    ],
+    "bytes": 884980745,
+    "success": true
+  },
+  {
+    "repo": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+    "revision": "ea8dc2863c51be0a264bab82070e3e8836b02d51",
+    "files": [
+      {
+        "path": "LICENSE.md",
+        "bytes": 7503,
+        "sha256": "25d122eb8f5b880fd23c736fb6ea8018ee45c12237e00b8a86d14c653904999e"
+      },
+      {
+        "path": "preprocessor_config.json",
+        "bytes": 585,
+        "sha256": "960c41d1f3a7778b936365769a2d90550b318a6c0a53a0296957adacfe5e0dd7"
+      },
+      {
+        "path": "config.json",
+        "bytes": 745,
+        "sha256": "135ecd23e34a70b6fbed8b083fdecb319b7e3a54e3d849258bbe4ddcf1783bb5"
+      },
+      {
+        "path": "model.safetensors",
+        "bytes": 1212559808,
+        "sha256": "dcb2e45127cccbf1601e5f42fef165eea275c8e5213197e8dcf3f48822718179"
+      },
+      {
+        "path": "README.md",
+        "bytes": 14520,
+        "sha256": "5395522a8a611d0578b6036f47e60445381ee4b2c7508f0e93d9e4c1e876fa63"
+      }
+    ],
+    "bytes": 1212583161,
+    "success": true
+  }
+]

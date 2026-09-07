@@ -1,288 +1,241 @@
-# Robot Harness Gen-Env and Self-Improving Platform
+# Gen-Env: Genesis Scene Generation and Asset Reuse
 
-`/gen-env` compiles bounded natural-language requests into deterministic,
-RoboTwin-loadable scene packages and validates them in SAPIEN before they can
-enter the Robot Harness command loop.
+Build Genesis scenes from natural-language requests, reuse native and reconstructed
+assets, and record explicit physics and rendering results. The current workflow
+lives in `self_improving/sim_adapters/genesis/`; SimFoundry provides a separate
+video reconstruction route whose individual objects can be imported into Genesis.
 
 ```text
-text
-  -> typed SceneSpec
-  -> RoboTwin asset grounding
-  -> target-local support and containment solve
-  -> hash-bound ResolvedSceneSpec package
-  -> RoboTwin/SAPIEN replay
-  -> contact, stability, containment, visibility, and video gates
+Natural-language request
+  -> object and relation extraction
+  -> CLIP retrieval + VLM asset selection
+  -> scene planning + deterministic layout solve
+  -> initial Genesis previews
+  -> independent Genesis physics validation
+  -> final rendering after physical acceptance
+
+Video -> SimFoundry reconstruction -> portable URDF assets -> Genesis asset library
 ```
 
-The stable `scene_gen/` core owns this `/gen-env` trust boundary. The repository
-also contains a modular `self_improving/` layer for the dashboard's
-Self-Improving Agents project: scene-agent orchestration, collection/evaluation
-adapters, diagnosis and promotion gates, asset reuse, and simulator migration.
-Those integrations consume the core contract; they do not bypass it.
+Asset selection, scene construction, physics validation, and final rendering have
+separate results. A preview or a completed simulation does not imply that the
+physical acceptance criteria passed.
+
+## Start Here
+
+| Goal | Entry point |
+| --- | --- |
+| Prepare the Genesis environment | [Install and test](#install-and-test) |
+| Build a scene from text | [Native Genesis scene workflow](#build-a-native-genesis-asset-scene) |
+| Check an existing scene's physics | [Genesis physics validation](#validate-an-existing-native-genesis-asset-scene) |
+| Reconstruct objects from video | [SimFoundry reconstruction](#reconstruct-video-with-simfoundry) |
+| Add reconstructed assets to Genesis | [URDF import and acceptance](#reuse-simfoundry-assets-in-genesis) |
+| Read detailed commands in Chinese | [Genesis adapter guide](self_improving/sim_adapters/genesis/README.md) |
 
 ## Repository Architecture
 
 ```text
-scene_gen/                         stable deterministic /gen-env core
-self_improving/stage5/             active multi-agent scene workflow
-self_improving/alchedata/          command loop, diagnosis, memory, promotion
-self_improving/asset_pipeline/     reusable-asset ingest and simulator migration
-self_improving/sim_adapters/       thin simulator integration probes
-self_improving/onboarding/         recovered migration tools and provenance
-self_improving/legacy/stage04/     read-only historical stage snapshot
-self_improving/legacy/robotwin_text2env_alt/
-                                   read-only alternate Text2Env history
-self_improving/validation_evidence/
-                                   compact recovered simulator acceptance records
-self_improving/workspace_archives/
-                                   full-file manifests and Release archive pointers
-apps/pearl_evidence_portal/        PEARL evidence portal and hosted subset
-external/OpenReal2Sim/             independent Git submodule
-external/digital-cousins/          independent Git submodule
-external/MetaSim/                  pinned validation dependency submodule
+self_improving/sim_adapters/genesis/     asset selection, layout, physics, rendering
+self_improving/sim_adapters/simfoundry/  reconstruction CLI and environment setup
+self_improving/asset_pipeline/          asset reuse and simulator migration
+external/genesis-world/                pinned Genesis upstream submodule
+external/SimFoundry/                    pinned reconstruction upstream submodule
+configs/                               model configuration examples
+assets/genesis/                        local assets, previews, and retrieval indexes
+output/                                tasks named from natural-language input
+data/                                  local reconstruction and acceptance artifacts
+.cache/                                local model caches and task locks
+repo-docs/                             Chinese architecture and behavior guides
 ```
 
-Initialize the complete source tree and audit it with:
-
-```bash
-git submodule update --init --recursive
-python -m self_improving --json
-```
-
-See [`self_improving/README.md`](self_improving/README.md) for module ownership,
-source provenance, and the retained-vs-excluded artifact policy.
-
-## What Is Enforced
-
-- Complete source footprints must fit explicit support surfaces with a minimum
-  margin. Outer object AABBs are not treated as stable support.
-- Nested source objects are dynamic and must contact their declared target for
-  at least 80% of the final sampling window.
-- Contact candidates count only when at least one point is within 1 mm of the
-  collision surface. Broad-phase pairs with positive clearance do not count.
-- Nested objects must have zero active contact with undeclared support targets,
-  including the table below a plate or container.
-- Container placement uses target-local interior geometry and an explicit
-  collision-floor offset.
-- Fixed objects must remain within 20 mm and 5 degrees of the resolved pose.
-  Dynamic objects are checked against final contact, containment, and spatial
-  relations after settling rather than their released spawn pose.
-- Objects must settle, remain visible, avoid penetration, and stay inside the
-  declared workspace.
-- A 120-frame runtime video must contain at least 30 distinct frames. The
-  capture keeps 119 consecutive release frames plus the final settled frame.
-- Static, contact-free acceptance is limited to fixed objects placed directly on
-  the table. It cannot satisfy stacking or containment.
-
-The bundled RoboTwin overrides currently include a measured 100 mm stable
-surface for `003_plate`, an 8 mm support margin, and a measured 12 mm interior
-floor offset for `110_basket` model 1.
-
-## Supported Request Surface
-
-The parser is deliberately bounded and bilingual. Current examples include:
-
-```text
-Place a can on top of a plate.
-Put a cup inside a basket.
-Place a half-open cabinet on the table.
-Place a red can to the left of a plastic basket near the center.
-把杯子放进篮子里。
-```
-
-Catalog misses can optionally produce deterministic geometric proxies. This is
-not unrestricted text-to-3D generation.
-
-For the runtime-unstable `004_fluted-block`, the compiler emits a deterministic
-primitive proxy with source lineage. It preserves native dimensions on the
-table and applies a uniformly scaled footprint only when a nested support
-surface requires it. Automatic compatibility scaling is currently restricted
-to block/cube categories that have passed real SAPIEN replay.
+Assets, caches, and bulk experiment outputs are local data and are not bundled in
+a Git clone. Module ownership and source inventories are documented in
+[self_improving/README.md](self_improving/README.md).
 
 ## Install And Test
 
-Python 3.11 is the tested local version.
+Use Python 3.12 for the Genesis environment. Genesis is pinned to
+`external/genesis-world@0e74bf392781884ccad765c3f344419c86b872ca`.
+The following creates a separate environment with CPU PyTorch:
 
 ```bash
-python3.11 -m venv .venv
-.venv/bin/pip install -e '.[dev,demo]'
-.venv/bin/pytest -q
+git submodule update --init external/genesis-world
+python3.12 -m venv venv/genesis
+source venv/genesis/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e '.[dev,platform]'
+python -m pip install -e external/genesis-world
+python -m pip install -r self_improving/sim_adapters/genesis/requirements-clip.txt
+
+python -m pytest -q
 ```
 
-The test suite uses committed fixtures and does not require a RoboTwin checkout.
-Real runtime validation requires RoboTwin and its SAPIEN environment.
-
-## Build A Real Asset Catalog
+Run the following examples from the repository root with the Genesis environment
+activated. If you already have a working Genesis environment, activate that
+instead. Asset preparation and preview dependencies are described in the
+[adapter guide](self_improving/sim_adapters/genesis/README.md).
+The root fixture tests do not establish real simulator acceptance; the Genesis
+adapter has a separate suite:
 
 ```bash
-python -m scene_gen.catalog \
-  --robotwin-root /path/to/RoboTwin \
-  --overrides scene_gen/asset_overrides.yml \
-  --source-commit "$(git -C /path/to/RoboTwin rev-parse HEAD)" \
-  --out data/scene_gen/asset_catalog.json \
-  --missing-out data/scene_gen/missing_assets.json
+python -m pytest -q self_improving/sim_adapters/genesis/tests
 ```
 
-The catalog records exact source files, dimensions, stable orientations,
-support surfaces, container interiors, articulation limits, and availability.
+Some real simulator tests require explicit opt-in and local assets; see the
+adapter's evidence notes for the corresponding commands.
 
-## Compile `/gen-env`
+## Model Configuration And Asset Prerequisites
+
+Text extraction, VLM selection, and LLM scene planning require a configured model
+service. Create the local configuration only if it does not already exist:
 
 ```bash
-python script/generate_scene.py \
-  --prompt "Place a can on top of a plate." \
-  --seed 42 \
-  --asset-catalog data/scene_gen/asset_catalog.json \
-  --out-root data/generated_scenes
+cp -n configs/llm.example.yaml configs/llm.yaml
+chmod 600 configs/llm.yaml
 ```
 
-Each accepted package contains the request, typed scene spec, fully grounded
-resolved scene, replay entrypoint, static validation report, and SHA-256 manifest.
+Edit the active profile's endpoint, model, API mode, and credential source for
+your service. The VLM selection service must support image inputs. Keep
+`configs/llm.yaml` local; it is ignored by Git. SimFoundry uses its own separate
+model and credential setup.
 
-## Run Real Physics
+The text-to-scene example below expects the prepared index
+`assets/genesis/clip_non_robot_v1/index.json` and its referenced asset files.
+Follow the [asset preparation and CLIP instructions](self_improving/sim_adapters/genesis/README.md)
+to build previews and an index before running it on a fresh machine. For
+reconstructed assets, use the [SimFoundry asset guide](self_improving/sim_adapters/genesis/SIMFOUNDRY_ASSETS.md).
 
-Use the Python interpreter from the RoboTwin environment:
+## Build A Native Genesis Asset Scene
+
+This platform workflow uses native assets and its own scene contract. Prepare the
+Genesis environment, asset previews, CLIP index, and local model configuration
+using the [Genesis adapter guide](self_improving/sim_adapters/genesis/README.md).
+Then run from the repository root with that environment's Python:
 
 ```bash
-python script/run_scene_runtime.py \
-  --robotwin-root /path/to/RoboTwin \
-  --resolved-scene data/generated_scenes/<scene-id>/resolved_scene.json \
-  --asset-catalog data/scene_gen/asset_catalog.json \
-  --out-dir data/runtime/<scene-id> \
-  --precheck-steps 0 \
-  --settle-steps 900 \
-  --contact-window-steps 120 \
-  --video-frames 120 \
-  --fps 12
+python self_improving/sim_adapters/genesis/extract_assets.py \
+  --request "桌上放着一个苹果、一个黄色杯子和一个橙色塑料碗。" \
+  --clip-index assets/genesis/clip_non_robot_v1/index.json \
+  --vlm-config configs/llm.yaml --output-root output
 ```
 
-Starting with zero precheck steps records the physical release and prevents an
-unstable initial state from being hidden before evidence capture. The 900-step
-window is required by the current apple-in-basket asset pair; it still had
-measurable motion at 300 steps.
+The default entry point extracts objects and relations, selects each asset with
+CLIP Top-3 plus VLM selection, and plans the initial scene. Code solves the
+coordinates and renders initial views. `--stop-after assets` stops after selection.
+Tasks retain `01_obj`, `02_scene`, `03_physics`, and `04_final_render`; a built
+initial scene does not establish physical acceptance. Indexes and downloaded
+assets are local prerequisites, not included in a fresh Git clone.
 
-## Prompt Matrix
+## Validate An Existing Native Genesis Asset Scene
+
+An already selected and built `01_obj` / `02_scene` task can run an independent physics stage:
 
 ```bash
-python script/run_prompt_matrix.py \
-  --matrix tests/fixtures/prompt_matrix.json \
-  --asset-catalog data/scene_gen/asset_catalog.json \
-  --generated-objects-root /path/to/RoboTwin/assets/objects \
-  --out-root data/prompt_matrix \
-  --report data/prompt_matrix/report.json \
-  --runtime \
-  --robotwin-root /path/to/RoboTwin
+python self_improving/sim_adapters/genesis/validate_asset_scene.py \
+  --scene-dir 'output/桌上放着一个苹果、一个黄色杯子和一个橙色塑料碗。' \
+  --clip-index assets/genesis/clip_non_robot_v1/index.json \
+  --fixed-object table_1 --profile baseline
 ```
 
-The committed matrix has 11 English/Chinese cases and three seeds. Runtime is
-run for the first seed of each positive case unless `--runtime-all-seeds` is
-set. Expected solver rejections remain part of the aggregate pass/fail result.
+This loads native MJCF/GLB, records four seconds of real CPU physics and checks stability,
+declared support, penetration and explicit spatial relations. It preserves assets and initial
+layout, replaces only `03_physics`, clears stale `04_final_render`, and never renders.
+Exit codes: 0 passed, 2 physical failure, 1 input/loading/collection error. `half_dt` retains the
+same four-second duration. The original four-asset scene currently fails the physical gates;
+a completed validator does not imply the scene passes. See the
+[adapter guide](self_improving/sim_adapters/genesis/README.md) and
+[measured evidence](self_improving/sim_adapters/genesis/PHYSICS_VALIDATION_EVIDENCE.md).
 
-## Acceptance Batches
+## Reconstruct Video With SimFoundry
+
+`external/SimFoundry` is pinned to
+`9e34ebefcd020583fbb755a8b57268dce78eca26`. The platform wrapper exposes
+reconstruction, augmentation, and application smoke commands; the upstream
+project owns the reconstruction algorithm. Follow the
+[installation and model configuration guide](self_improving/sim_adapters/simfoundry/README.md)
+to prepare its separate environment and model access before running:
 
 ```bash
-python script/run_100_seed_acceptance.py \
-  --prompt "Place a can on top of a plate." \
-  --seed-count 100 \
-  --asset-catalog data/scene_gen/asset_catalog.json \
-  --out-root data/acceptance/can_plate \
-  --report data/acceptance/can_plate.json
+bash self_improving/sim_adapters/simfoundry/run.sh doctor
+bash self_improving/sim_adapters/simfoundry/run.sh reconstruct \
+  --scene-name fruits_trial_001 \
+  --video-fpath "$PWD/external/SimFoundry/docs/assets/example_videos/Fruits.mp4" \
+  --root-dir "$PWD/data/simfoundry" \
+  --dry-run -- s7_mesh.low_vram=true
 ```
 
-Add `--runtime --robotwin-root /path/to/RoboTwin` for SAPIEN replay. Only the
-seeds listed by `--video-seeds` retain MP4 files; every runtime seed retains
-structured physical evidence.
+The example requests an execution plan. Remove `--dry-run` to reconstruct after
+configuring the models; use a new scene name for each input. `doctor` checks local
+prerequisites, not service authorization or end-to-end readiness. The output
+`s14_og/reconstructed_og_scene.json` is an OmniGibson scene. Importing its objects into Genesis is a separate step.
 
-## Validated Physics Evidence
+The recorded 2026-09-07 Fruits run reconstructed seven objects and completed a
+120-step OmniGibson random-action smoke run. See the
+[reproduction record](self_improving/sim_adapters/simfoundry/REPRODUCTION.md)
+for evidence and limitations. This does not establish reconstruction accuracy or
+Genesis physical acceptance. Single-image input is supported by the pinned
+upstream source but has not been validated end to end locally.
 
-[COMPUTED] The 2026-07-17 RTX 5090 acceptance run passed 20/20 forced SAPIEN
-replays: 10 seeds for can-on-plate and 10 seeds for cup-in-basket. No run used
-resume data.
+## Reuse SimFoundry Assets In Genesis
 
-- Can-on-plate: minimum target-contact fraction 1.0, maximum unexpected-contact
-  fraction 0.0, minimum final support margin 8.55 mm, maximum resolved
-  translation error 4.08 mm, and maximum rotation error 1.043 degrees.
-- Cup-in-basket: all 10 final states remained contained, minimum target-contact
-  fraction 1.0, maximum unexpected-contact fraction 0.0, maximum resolved
-  translation error 2.645 mm, and maximum rotation error 0.975 degrees.
-- Both matrices reported zero penetration points, moving final states, and
-  dropped nested objects.
-- The native `004_fluted-block` footprint cannot satisfy the plate support
-  margin. The current compiler derives a `0.597x` stable primitive proxy with
-  dimensions `55.088 x 54.104 x 38.980 mm`; its real replay retained an
-  `8.861 mm` support margin and continuous target contact.
-
-[COMPUTED] The 2026-07-19 prompt matrix passed 33/33 compile outcomes and 10/10
-real SAPIEN replays on the RTX 5090 host. Every 120-frame MP4 contained at least
-100 distinct frames. The matrix includes stacking, containment, table support,
-left/right/front/near relations, articulation state, bilingual equivalence,
-derived scale adaptation, and an infeasible-region expected rejection.
-
-The current commands, thresholds, report hashes, and per-case results are in
-[the prompt-matrix acceptance note](docs/evidence/prompt-matrix-20260719.md) and
-[its structured report](docs/evidence/prompt-matrix-runtime-20260719.json).
-The earlier 20-seed baseline remains in
-[the 2026-07-17 physics note](docs/evidence/physics-acceptance-20260717.md).
-
-## Browser Demo
+The independent importer converts reconstructed single rigid objects into
+self-contained URDF packages with visual/collision meshes, physical metadata,
+and source hashes. It preserves geometry and physical meaning while expressing
+inertia in the link frame. It does not transfer the original scene layout or robot.
+With an existing reconstruction, run in the Genesis environment:
 
 ```bash
-export ROBOTWIN_ROOT=/path/to/RoboTwin
-export ROBOTWIN_PYTHON=/path/to/robotwin/python
-export SCENE_ASSET_CATALOG=$PWD/data/scene_gen/asset_catalog.json
-export SCENE_DEMO_JOBS_ROOT=$PWD/data/demo_jobs
-
-python -m demo.app --host 0.0.0.0 --port 8765
+python -m self_improving.sim_adapters.genesis.import_simfoundry_assets import \
+  --scene-dir data/simfoundry/fruits_da3_20260907 \
+  --output-dir assets/genesis/my_simfoundry_library
 ```
 
-The demo queues GPU work, accepts text and a seed, and exposes only registered
-screenshots, video, manifests, and validation evidence from each job.
+The output directory must be new. Follow the
+[standard asset guide](self_improving/sim_adapters/genesis/SIMFOUNDRY_ASSETS.md)
+for six-view previews, CLIP indexing, union retrieval, and independent drop tests.
+Packages can be loaded in Genesis without a SimFoundry or OmniGibson installation.
+Selection from the union index runs an asset physics precheck; failure retains
+the selected candidate and blocks automatic scene construction.
 
-The current lab-network deployment is available at
-[`http://100.64.0.6:8765`](http://100.64.0.6:8765).
+**Recorded Fruits status (2026-09-07):** all seven packages, 42 preview images,
+and dynamic geometry/mass/inertia checks passed. All seven 1,000-step drop tests
+completed but failed the declared physical thresholds: penetration exceeded
+1 mm for every asset, and the banana also exceeded the final angular-velocity
+limit. No automatic repair was applied. These are asset import and loading
+results, not seven physically accepted assets. Compact results are recorded in
+[SIMFOUNDRY_EVIDENCE.json](self_improving/sim_adapters/genesis/SIMFOUNDRY_EVIDENCE.json);
+bulk reports and videos remain local under
+`data/simfoundry_genesis/fruits_acceptance_v2/`.
 
-## Optional Rendered Critic
+## Local Output Organization
 
-```bash
-pip install -e '.[vlm]'
-python script/run_rendered_critic.py \
-  --resolved-scene data/generated_scenes/<scene-id>/resolved_scene.json \
-  --image data/runtime/<scene-id>/preview_head.png \
-  --image data/runtime/<scene-id>/preview_world_left.png \
-  --image data/runtime/<scene-id>/preview_world_right.png \
-  --out data/runtime/<scene-id>/rendered_critic.json
-```
+`output/` contains task folders named from the input. Shared Genesis assets and indexes live in
+`assets/genesis/`; historical checks in `data/genesis_history/`; video reconstruction outputs in
+`data/simfoundry/`; caches and task locks in `.cache/genesis/`. Storage maintenance receipts live in
+`data/storage_maintenance/`. See the [Chinese directory guide](repo-docs/modules/self-improving-platform.md#输出共享资源与缓存).
 
-The rendered critic checks visible semantics. Deterministic physics gates remain
-authoritative for contacts, support, containment, drift, and articulation state.
+## Evidence And Acceptance
 
-## Layout
+- Initial scene previews establish asset loading and visible layout. Run the
+  independent physics stage to evaluate stability, support, penetration, and
+  declared spatial relations.
+- Single-asset drop tests are selection prechecks. A passing asset still needs
+  validation in its assembled scene.
+- Physics profiles define their own frozen thresholds. Record the selected
+  profile and preserve failed runs, trajectories, and diagnostic artifacts.
+- Images, videos, trajectories, and source assets are bound by manifests and
+  hashes. Camera-orbit videos are distinct from sequential physics recordings.
 
-```text
-scene_gen/          schemas, catalog, grounding, solver, replay, validators
-script/             compile, runtime, batch acceptance, rendered critic
-demo/               Flask API and browser interface
-tests/fixtures/     self-contained catalog and prompt fixtures
-tests/              parser, solver, validator, critic, demo, and attack tests
-self_improving/     orchestration, diagnosis, asset pipeline, adapters, archives
-apps/               standalone platform presentation surfaces
-external/           OpenReal2Sim and digital-cousins Git submodules
-```
+Current commands and measured limitations are documented in the
+[Genesis physics evidence](self_improving/sim_adapters/genesis/PHYSICS_VALIDATION_EVIDENCE.md)
+and [SimFoundry asset evidence](self_improving/sim_adapters/genesis/SIMFOUNDRY_ASSETS.md).
 
-## Provenance
+## Provenance And License
 
-The work started from
-[`yezheng04/robotwin-text2env-demo`](https://github.com/yezheng04/robotwin-text2env-demo)
-and was narrowed into the Robot Harness `/gen-env` subsystem. RoboTwin assets are
-referenced by path and are not redistributed here.
+External projects retain their independent Git histories and licenses as
+submodules. Source provenance and retained-artifact policies are recorded in
+[self_improving/source_inventory.json](self_improving/source_inventory.json).
 
-The platform layer consolidates the former Alchedata self-improving workspace,
-RobotWin Text2Env stage-04/stage-05 trees, AgenticSim runtime orchestration,
-env-gen asset/migration branches, onboarding migration tools, the complete
-PEARL evidence-portal history, and the alternate `text2env.tabletop.v0`
-prototype. Exact origins, merge commits, retained evidence, and exclusions are recorded in
-[`self_improving/source_inventory.json`](self_improving/source_inventory.json).
-
-## License
-
-Apache-2.0. See `LICENSE`.
+This repository is licensed under Apache-2.0. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE) for licensing and attribution.

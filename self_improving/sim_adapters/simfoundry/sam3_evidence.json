@@ -1,0 +1,53 @@
+{
+  "scope": "isolated SAM3 image segmentation using a manually supplied text prompt; not pipeline object detection or scene reconstruction",
+  "success": true,
+  "offline": true,
+  "model": "facebook/sam3",
+  "model_revision": "3c879f39826c281e95690f02c7821c4de09afae7",
+  "input_frame": "data/simfoundry/fruits_da3_20260907/s1_video/frames_all/frame_0001.png",
+  "input_sha256": "ebf7fcd3b81c5a5cfd26def6585104125685c2543232f07e5fa332505ba589f1",
+  "prompt": "fruit",
+  "confidence_threshold": 0.5,
+  "mask_shape": [
+    4,
+    1,
+    720,
+    1280
+  ],
+  "scores": [
+    0.94921875,
+    0.95703125,
+    0.95703125,
+    0.96484375
+  ],
+  "boxes_xyxy": [
+    [
+      356.0210876464844,
+      294.2048645019531,
+      432.3316650390625,
+      406.73638916015625
+    ],
+    [
+      456.5205383300781,
+      247.82305908203125,
+      528.3078002929688,
+      319.629150390625
+    ],
+    [
+      497.9272766113281,
+      193.52024841308594,
+      559.89599609375,
+      257.23211669921875
+    ],
+    [
+      301.1798400878906,
+      262.2468566894531,
+      410.45281982421875,
+      354.8403015136719
+    ]
+  ],
+  "seconds": 7.94,
+  "peak_gpu_allocated_gib": 4.97,
+  "output_path": "data/simfoundry/sam3_smoke_20260907/masks.npz",
+  "output_sha256": "66c18375f6ccc3427b665fc84ddb31044ebaa325a4f31525828c71f9a6df67f3"
+}

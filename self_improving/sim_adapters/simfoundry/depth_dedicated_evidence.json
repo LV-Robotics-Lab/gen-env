@@ -1,0 +1,61 @@
+{
+  "scope": "video depth/camera reconstruction only; no segmented objects or simulation scene",
+  "date": "2026-09-07",
+  "upstream_commit": "9e34ebefcd020583fbb755a8b57268dce78eca26",
+  "model": "depth-anything/DA3NESTED-GIANT-LARGE-1.1",
+  "model_revision": "b2359bdf726fb44ef62acca04d629dcf158053e7",
+  "execution_environment": "da3 (upstream default; no environment override)",
+  "input_frames": 15,
+  "arrays": {
+    "depth": {
+      "shape": [
+        15,
+        252,
+        448
+      ],
+      "dtype": "float32",
+      "finite": true,
+      "min": 0.6680470108985901,
+      "max": 3.5609829425811768
+    },
+    "conf": {
+      "shape": [
+        15,
+        252,
+        448
+      ],
+      "dtype": "float32",
+      "finite": true,
+      "min": 1.0,
+      "max": 25.639999389648438
+    },
+    "intrinsics": {
+      "shape": [
+        15,
+        3,
+        3
+      ],
+      "dtype": "float32",
+      "finite": true,
+      "min": 0.0,
+      "max": 385.12579345703125
+    },
+    "extrinsics": {
+      "shape": [
+        15,
+        3,
+        4
+      ],
+      "dtype": "float32",
+      "finite": true,
+      "min": -0.4464361071586609,
+      "max": 1.0
+    }
+  },
+  "npz_path": "data/simfoundry/fruits_da3_20260907/s2_da/da/exports/npz/results.npz",
+  "npz_sha256": "edf9dc8cd308c00f2ea25613d5acc387748455e74e4f3fd29d0003857e6fa426",
+  "npz_bytes": 10557661,
+  "success": true,
+  "complete_video_to_scene": "not_run",
+  "core_physics_acceptance": "not_evaluated"
+}

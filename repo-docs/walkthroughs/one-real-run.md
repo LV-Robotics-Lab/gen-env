@@ -1,6 +1,6 @@
 # 一条真实路径：把一句 prompt 编译成 SAPIEN 验证过的场景
 
-这一页跟通一条真实路径：一句受限的中英文 prompt 进编译器，在几秒内变成一份哈希绑定的 `ResolvedSceneSpec` 包，再在 RoboTwin/SAPIEN 里物理回放，最后被一组运行时门控放过。被跟的具体行为是仓库 README 引的那条命令：
+这一页跟通一条真实路径：一句受限的中英文 prompt 进编译器，在几秒内变成一份哈希绑定的 `ResolvedSceneSpec` 包，再在 RoboTwin/SAPIEN 里物理回放，最后被一组运行时门控放过。被跟的具体行为是仓库 README 引的默认规则解析命令；省略 `--provider` 等价于 `--provider rule`：
 
 ```bash
 python script/generate_scene.py \
@@ -9,28 +9,36 @@ python script/generate_scene.py \
   --asset-catalog data/scene_gen/asset_catalog.json \
   --out-root data/generated_scenes
 ```
+需要开放词表时，可在同一个编译入口显式增加 `--provider llm --llm-config configs/llm.yaml`，并按需传 `--llm-profile <name>`。这条 opt-in 路径只替换 `text -> SceneSpec` 的提取阶段；Demo、prompt matrix、100-seed runner 与后续 grounding / solver / builder / SAPIEN 回放仍不会隐式调用模型。
 
-短到一句话的版本：受限解析 → 类型化契约 + 资产 grounding → 目标局部求解 → 哈希绑定包 → SAPIEN 回放采集 → 运行时门控。这个路径的难点不是某一步本身，而是它跨越的两条信任边界：一条是文本到机器人意图（prompt 能不能干净地只带语义、绝不夹带后端字段或 pose），另一条是看起来稳到物理稳（外层 AABB 看着能落、其实 plate 里圈 100 mm 那块才是稳定面；渲染图能过、其实 SAPIEN 终末接触还过不去）。每一步存在的理由都是在某一类塌方之前先把它挡住。若「为什么不能用外层 AABB」、「为什么 120 帧」这类问题读完本页还模糊，去 [代码地图](../code-map.md) 找源码入口，或读对应模块：[受限解析](../modules/bounded-parser.md)、[类型化场景契约](../modules/scene-contract.md)、[目标局部几何](../modules/target-local-geometry.md)、[受限求解器](../modules/solver.md)、[确定性代理](../modules/derived-proxy.md)、[哈希绑定包](../modules/replay-package.md)、[运行时门控](../modules/runtime-gates.md)。
+
+短到一句话的版本：默认规则解析或显式两阶段 LLM 提取 → 类型化契约 + 资产 grounding → 目标局部求解 → 哈希绑定包 → SAPIEN 回放采集 → 运行时门控。这个路径的难点不是某一步本身，而是它跨越的两条信任边界：一条是文本到机器人意图（prompt 和模型输出能不能干净地只带语义、绝不夹带后端字段或 pose），另一条是看起来稳到物理稳（外层 AABB 看着能落、其实 plate 里圈 100 mm 那块才是稳定面；渲染图能过、其实 SAPIEN 终末接触还过不去）。每一步存在的理由都是在某一类塌方之前先把它挡住。若「为什么不能用外层 AABB」、「为什么 120 帧」这类问题读完本页还模糊，去 [代码地图](../code-map.md) 找源码入口，或读对应模块：[受限解析](../modules/bounded-parser.md)、[类型化场景契约](../modules/scene-contract.md)、[目标局部几何](../modules/target-local-geometry.md)、[受限求解器](../modules/solver.md)、[确定性代理](../modules/derived-proxy.md)、[哈希绑定包](../modules/replay-package.md)、[运行时门控](../modules/runtime-gates.md)。
 
 ## Step 1: 句子先被收进受限解析器，绝不变成代码或 pose
 
-prompt 进入系统的第一件事不是被理解，而是被收紧。解析器只接受一个有界的子集——桌面物体名 + 颜色/材质/区域 + on top of / inside / left of / right of / front of / behind / near / distance 至少 这几种关系。它显式拒绝可执行代码、文件系统路径、后端字段名（`asset_id`、`qpos`、`quaternion`、`world_xyz` 等）、坐标赋值、坐标元组，以及 `between`、`align` 这类尚未支持的 MVP 特性。这一步把「文本输入」压缩成「语义意图」：剩下的是一个 `SceneSpec`，没有路径，没有 id，没有 pose。
+prompt 进入系统的第一件事不是被自由解释，而是被收紧。默认规则解析器只接受词表内的桌面物体名；显式 LLM 路径分成 objects 与 relations 两阶段，可提出其他受限格式的英文单数类别，但仍只能表达颜色/材质/区域、on top of / inside / left of / right of / front of / behind / near / distance 至少等有限语义。两条路径都显式拒绝可执行代码、文件系统路径、后端字段名（`asset_id`、`qpos`、`quaternion`、`world_xyz` 等）、坐标赋值、坐标元组，以及 `between`、`align` 这类尚未支持的 MVP 特性。这一步把「文本输入」压缩成「语义意图」：剩下的是一个 `SceneSpec`，没有资产/模型 id，没有路径，没有 pose。
 
-具体到这里这条 prompt：解析器先在 `OBJECT_TERMS` 词典里认出 `can` 和 `plate` 两个提及，给它们分配 `can_1` 与 `plate_1` 这两个稳定 id；再从两个提及之间的词判断出 `on_top_of` 关系，所以 `can_1` 是 nested source、不再分配 `on_table`，而 `plate_1` 拿一条 `on_table`。最终输出 `SceneSpec`。规则在 `scene_gen/parser.py:parse_rule_based` 与 `extract_mentions`/`_relation_between`；边界拒绝在 `validate_prompt_boundary` 和 schema 的 `FORBIDDEN_SCENE_KEYS`。这一步的设计原因在 [受限解析](../modules/bounded-parser.md)，类型化字段在 [类型化场景契约](../modules/scene-contract.md)。
+具体到这里这条默认 prompt：解析器先在 `OBJECT_TERMS` 词典里认出 `can` 和 `plate` 两个提及，给它们分配 `can_1` 与 `plate_1` 这两个稳定 id；再从两个提及之间的词判断出 `on_top_of` 关系，所以 `can_1` 是 nested source、不再分配 `on_table`，而 `plate_1` 拿一条 `on_table`。LLM 路径则先清洗 object id/属性，再让第二阶段只引用这些 id 提取 support topology 与同层 lateral 关系；严格单 JSON、字段白名单和高置信文本一致性检查会拒绝虚构属性、漏掉或反转直接关系，模型报告 ambiguity 或重试耗尽就结构化失败，不会退回规则解析。最终两条路径都输出同一个 `SceneSpec` 契约。规则在 `scene_gen/parser.py:parse_rule_based`，LLM 实现在 `scene_gen/llm_provider.py` 与 `semantic_checks.py`；共同边界在 `validate_prompt_boundary`、`parse_provider_payload` 和 schema 的 `FORBIDDEN_SCENE_KEYS`。这一步的设计原因在 [受限解析](../modules/bounded-parser.md)，类型化字段在 [类型化场景契约](../modules/scene-contract.md)。
 
 ## Step 2: 类型化契约把它锁成不可变、可复现的spec
 
-解析器吐出的还是普通字典形状，下一步是让它穿过 `SceneSpec` 这道 pydantic 契约。`SceneSpec` 是 `extra="forbid"` 且 `frozen=True`：传入未知字段直接报错，对象之间唯一性、每个对象必须有且只有一条 support 关系、left/right/front/behind 三组轴向约束不能成环、`distance_at_least` 不能和 `near` 的上限矛盾——这些跨字段语义由 `model_validator` 在构造时一次过完。`seed` 来自命令行，写在 spec 里，后面所有随机都从它派生。`scene_id` 也是从 prompt 派生的稳定串。
+规则路径直接构造 `SceneSpec`；LLM 路径先把清洗后的 objects/relations 交给 `parse_provider_payload`，再进入同一道 pydantic 契约。provider 返回的 `scene_id`、`request`、`language`、`seed`、frame/unit/workspace 即使形状兼容也不会被信任，公共边界会从调用参数在本地重建 caller-owned envelope。`SceneSpec` 是 `extra="forbid"` 且 `frozen=True`：传入未知字段直接报错，对象之间唯一性、每个对象必须有且只有一条 support 关系、left/right/front/behind 三组轴向约束不能成环、`distance_at_least` 不能和 `near` 的上限矛盾——这些跨字段语义由 `model_validator` 在构造时一次过完。`seed` 来自命令行，写在 spec 里，后面所有随机都从它派生。`scene_id` 也是从 prompt 派生的稳定串。
 
-到这一步，系统手里的是一份不可变、可哈希的 `SceneSpec`；`SceneSpec.digest()` 是后续绑定的根。任何一个下游阶段如果想悄悄改意图，diff 就会跳出来。契约的完整字段和跨字段不变量在 [类型化场景契约](../modules/scene-contract.md)。如果一个 prompt 走到这里失败（比如出现禁用键或关系成环），`generate_scene.py` 不会继续，而是写到 `_failures/<id>/failure_report.json`，schema 里抛的是 `SceneSpecError` 或 pydantic `ValidationError`。
+到这一步，系统手里的是一份不可变、可哈希的 `SceneSpec`；`SceneSpec.digest()` 是后续绑定的根。任何一个下游阶段如果想悄悄改意图，diff 就会跳出来。契约的完整字段和跨字段不变量在 [类型化场景契约](../modules/scene-contract.md)。如果一个 prompt 走到这里失败（比如出现禁用键或关系成环），`generate_scene.py` 不会继续，而是写到 `_failures/<id>/failure_report.json`；LLM 配置/传输/解码/语义失败标成 `llm_scene_extraction`，未知 catalog 类别或属性无法落地标成 `asset_grounding`，不会静默 fallback。外部模型第一次未缓存调用不承诺位级确定性；从已验证 `SceneSpec` 向下，以及同一 prompt/config/prompt-hash 缓存的成功重放，才进入仓库可审计的确定性边界。
 
 ## Step 3: 资产 grounding 把每个 object 摆到真实 RoboTwin 模型上
+
+在进入这一步之前，CLI 已将通过校验的解析结果写入场景目录：`request.txt`、`scene_spec.json`、`objects/<object_id>.json` 和 `relations.json`；LLM 路径同时保存 `llm_parse_evidence.json`。每个对象文件直接导出完整 `SceneObjectSpec`，关系文件导出关系列表，均以 `scene_spec.json` 为权威，不接受编辑后重新输入。即使接下来的 catalog 加载、检索或求解失败，这些记录也保留；解析本身失败则不输出对象文件。
 
 接下来要做的是：每个 object 提及，都要落到一个真实存在、可用、有碰撞、有尺寸的 catalog 模型上。`grounding` 按 category 精确匹配、`semantic_name` 匹配、alias 匹配三档打分；color/material 元数据在 catalog 里有就加分、有但不符就拒、为空就保留 query；最后按可碰撞可用、有 normalized dimensions 加分，并按 `seed` + object_id + asset_id + model_id 算的确定性 tie-break 排序，选出唯一赢家。所有被拒候选（含不可用、缺碰撞、被更高分挤掉）保留进 `rejected_candidates`，最多 25 条，机读可追溯。
 
 这一步的设计理由是「自然语言里说 `can`，模型库里可能有十几个 can，但必须挑出同一个」。确定性来自 seed——同一个 catalog + 同一个 spec + 同一个 seed 必出同一个 `ResolvedObject` 集合。函数在 `scene_gen/grounding.py:ground_object` 与 `ground_scene`，攻击在 `tests/scene_gen/test_grounding.py:test_grounding_is_reproducible_for_fixed_catalog_query_and_seed`。catalog 自身从 RoboTwin checkout 扫描，实测尺寸/朝向/关节用 `scene_gen/asset_overrides.yml` 覆盖——比如 `003_plate` 的 100 mm 稳定面、`110_basket` 的 12 mm 内底偏移——这些 override 必须有实测几何或文档化仿真器探测，不许编尺寸。
 
 ## Step 4: 求解器按目标局部几何逐个摆位，摆不下就回退
+
+当前 CLI 在调用求解器前先用 `resolve_scene_assets` 检索全部对象，写出 `asset_resolution.json`，不会遇到第一个缺失项就停止扫描。逐对象状态为 `matched`（找到符合当前 catalog 规则的可用资产）、`missing`（没有满足语义或属性要求的候选）、`blocked`（匹配候选均不可用）；catalog 读取或格式异常是报告整体 `error`，不是所有对象缺失。报告保存 scene spec 摘要、实际使用的 catalog 摘要、选中资产及候选理由。默认必须全部匹配才继续求解，失败清单和解析产物保留，退出码为 2；不会跳过物体或自动生成代理。只有显式 `--generate-missing-assets` 仍先走已有代理生成，再检索有效 catalog。
+
+`matched` 只表示检索成功，不表示实际布局或物理通过。求解后还会核对 `resolved_scene.json` 中的资产绑定与检索报告一致。
 
 grounding 选完模型后，求解器才进场摆 (x, y, yaw, z)。它不是贪心，是 bounded rejection backtracking：按 support depth + 反向 degree + object_id 排序，先摆桌上的（depth 0）、再摆嵌套的（depth 1+）；每个物体最多 96 次随机尝试，最多 48 次回退。每次尝试按物体声明的 support 关系选约束：`on_table` 在工作区里随机；`on_top_of` 在 target 的 `support_surface_*` 几何里采样，且 source footprint 要落在 target 局部稳定面 + 余量内；`inside` 在 target 的 `interior_dimensions_m` 内采样，bottom 落到 `interior_floor_z_offset_m`。
 
@@ -44,7 +52,9 @@ grounding 选完模型后，求解器才进场摆 (x, y, yaw, z)。它不是贪�
 
 ## Step 6: builder 把 resolved 写成哈希绑定的回放包
 
-求解成功后，`build_scene_package` 在 `data/generated_scenes/<scene_id>/` 下写五个文件：`request.txt`、`scene_spec.json`、`resolved_scene.json`、`generated_scene.py`、`package_manifest.json`。manifest 里记录每个文件的 SHA-256、大小，外加 `source_scene_spec_sha256`、`resolved_scene_sha256`、`asset_catalog_sha256`、`compiler_version`、`entrypoint`、`resolved_only_entrypoint`。`builder.py:build_scene_package` 在落盘前先验 `resolved.source_scene_spec_sha256 == spec.digest()`、`scene_id` 与 `seed` 相同——resolved 与 spec 不绑同一根就拒写。
+求解成功后，`build_scene_package` 在 `data/generated_scenes/<scene_id>/` 下写入或确认基础五文件：`request.txt`、`scene_spec.json`、`resolved_scene.json`、`generated_scene.py`、`package_manifest.json`。CLI 将此前保存的 `objects/*.json`、`relations.json`、`asset_resolution.json`，以及 LLM 路径的无密钥 `llm_parse_evidence.json` 一并纳入现有 manifest；显式代理生成时也纳入生成报告和有效 catalog。manifest 记录每个文件的 SHA-256、大小，以及 `source_scene_spec_sha256`、`resolved_scene_sha256`、`asset_catalog_sha256`、`compiler_version` 和回放入口。`builder.py:build_scene_package` 在落盘前仍校验 spec/resolved 的摘要、场景 ID 与 seed 绑定，不另建 manifest。
+
+CLI 不覆盖已有非空场景目录：仅当输入、catalog、解析证据与生成选项一致，且已有包完成静态验证、必需对象文件均被哈希绑定时，才只读复用成功包。失败、中断、篡改或不同输入的已有目录均要求换一个 `--out-root`；不能用上次的 `resolved_scene.json` 冒充本轮成功。原 `_failures/` 失败报告兼容保留；新场景目录中的检索失败也保存本地 `failure_report.json`。
 
 `verify_package` 反过来再算一遍：每个文件 SHA-256 是否对得上、`resolved_scene.json` canonical digest 是否对得上 manifest 里的 `resolved_scene_sha256`。攻击用例 `test_package_verifier_detects_tampering` 锁住篡改检测。也就是说从这一步起，包是自证的：拿到包就能在不信任生成环境的前提下，确认它没被改过、且和当初过契约的 spec 是同一份意图。结构在 [哈希绑定包](../modules/replay-package.md)。这一步也是 demo API 对外暴露的「每个 job 的产物根」。
 
@@ -84,5 +94,7 @@ pytest -q
 ```
 
 要验运行时门控的失败分支但不在真机里，看 `tests/scene_gen/test_builder_validator.py` 里的 `test_runtime_validator_rejects_static_contact_free_nested_support`、`test_runtime_validator_rejects_intermittent_nested_contact`、`test_runtime_validator_rejects_nested_source_contacting_table`、`test_static_validator_rejects_edge_placement_even_inside_outer_plate_bounds`、`test_static_validator_rejects_target_local_container_overflow` 这几个攻击用例。
+
+要单独验证默认规则与显式 LLM 的共同解析边界、重试/缓存和证据绑定，可跑 `pytest -q tests/scene_gen/test_parser.py tests/scene_gen/test_llm_provider.py`；这些 LLM 测试使用 fake transport 或预建缓存，不访问真实模型服务。
 
 证据状态：除特别标注外，本页基于当前源码已确认。

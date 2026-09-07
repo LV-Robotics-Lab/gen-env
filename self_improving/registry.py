@@ -57,6 +57,13 @@ MODULES: tuple[ModuleSpec, ...] = (
         kind="submodule",
     ),
     ModuleSpec(
+        "simfoundry",
+        "external/SimFoundry",
+        "external",
+        kind="submodule",
+        required=False,
+    ),
+    ModuleSpec(
         "digital_cousins",
         "external/digital-cousins",
         "external",

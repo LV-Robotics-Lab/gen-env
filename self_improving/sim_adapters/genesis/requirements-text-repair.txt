@@ -1,0 +1,8 @@
+# Install alongside the pinned Genesis checkout and adapter dependencies.
+coacd==1.0.14
+trimesh==4.12.2
+scipy==1.18.1
+rtree==1.4.1
+fast-simplification==0.2.0
+opencv-python==5.0.0.93
+# ffmpeg/ffprobe must be installed as system executables.

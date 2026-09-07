@@ -12,6 +12,12 @@ venv/
 *.egg-info/
 build/
 dist/
+.env
+.env.*
+**/.env
+**/local_config.py
+configs/llm.yaml
+configs/llm.yml
 
 # Large generated robotics data
 *.hdf5
@@ -19,6 +25,8 @@ dist/
 data/
 datasets/
 outputs/
+/ouput/
+/output/
 checkpoints/
 logs/
 wandb/

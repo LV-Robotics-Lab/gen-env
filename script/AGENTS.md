@@ -9,7 +9,7 @@
 ## Key Files（关键文件）
 | File | Description |
 |------|-------------|
-| `generate_scene.py` | CLI：带 seed 编译 `text -> ResolvedSceneSpec` 包 |
+| `generate_scene.py` | CLI：带 seed 编译 `text -> ResolvedSceneSpec` 包；默认 rule，可显式选择两阶段 LLM provider |
 | `run_scene_runtime.py` | CLI：真实 SAPIEN/RoboTwin 物理回放，带 precheck/settle/contact-window/video 参数 |
 | `run_100_seed_acceptance.py` | CLI：100-seed 验收批量运行（可选 `--runtime` 跑 SAPIEN） |
 | `run_prompt_matrix.py` | CLI：跨 seed 跑 committed prompt 矩阵，可选 SAPIEN 运行时 |
@@ -25,13 +25,15 @@
 - 脚本是 `scene_gen` 之上的薄入口。流水线逻辑加到 `scene_gen`，不要加在这里；这些文件只做参数解析与编排。
 - 真实运行时需要 RoboTwin 环境 Python 与 RoboTwin checkout（`--robotwin-root`）。不要假设测试/CI 环境中有 RoboTwin。
 - 保持 CLI flag 名稳定——下游用户及 README/AGENTS 文档引用它们。
+- `--provider llm` 才允许读取 LLM 配置和访问网络；默认 `rule`、Demo、prompt matrix 与 100-seed runner 不得被隐式切换。
 
 ### Testing Requirements（测试要求）
-- 没有专门的脚本测试；覆盖来自 `tests/scene_gen/` 的 `scene_gen` 单元测试加基于 fixture 的矩阵/验收运行。
+- `generate_scene.py` 的 LLM 成功、配置失败与 grounding 失败由 `tests/scene_gen/test_llm_provider.py` 以 fake transport/cache 覆盖；其余覆盖来自 `tests/scene_gen/` 的单元测试和基于 fixture 的矩阵/验收运行。
 - 改动后用 `--help` 校验脚本的 CLI 表面。
 
 ### Common Patterns（常见模式）
 - 每个 CLI 在指定 `--out-root` 下写结构化 JSON 证据 + SHA-256 manifest。
+- LLM 成功时额外写 `llm_parse_evidence.json` 并把它列入 `package_manifest.json`；配置、传输、解码或语义失败写结构化 failure report，不自动 fallback。
 - 运行时视频：请求 120 帧，119 连续释放帧 + 最终 settled 帧；验收要求至少 30 个不同帧。
 
 ## Dependencies（依赖）

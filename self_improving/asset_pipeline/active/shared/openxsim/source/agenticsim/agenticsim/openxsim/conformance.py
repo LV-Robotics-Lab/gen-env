@@ -15,7 +15,6 @@ from .backends import CompileResult
 from .importers import import_compile_manifest
 from .ir import EnvironmentPackage
 
-
 PASS = "pass"
 FAIL = "fail"
 NOT_EVALUATED = "not_evaluated"
@@ -57,6 +56,39 @@ def _load_mapping(value: str | Path | Mapping[str, Any] | None) -> dict[str, Any
     return json.loads(Path(value).read_text(encoding="utf-8"))
 
 
+_GENESIS_SCENE_SCHEMA = "agenticsim.genesis_render_scene.v1"
+
+
+def _has_genesis_render_marker(result: CompileResult) -> bool:
+    """Recognize Genesis provenance even if an in-memory result is relabeled."""
+
+    if result.backend == "genesis":
+        return True
+    if result.metadata.get("artifact_format") == _GENESIS_SCENE_SCHEMA:
+        return True
+    if result.metadata.get("render_only") is True:
+        return True
+    for path_value in (result.artifact_path, result.manifest_path):
+        path = Path(path_value)
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("schema") == _GENESIS_SCENE_SCHEMA:
+            return True
+        if payload.get("backend") == "genesis":
+            return True
+        metadata = payload.get("metadata") or {}
+        if isinstance(metadata, Mapping) and (
+            metadata.get("artifact_format") == _GENESIS_SCENE_SCHEMA
+            or metadata.get("render_only") is True
+        ):
+            return True
+    return False
+
+
 def _artifact_check(result: CompileResult) -> ConformanceCheck:
     artifact = Path(result.artifact_path)
     if result.blockers:
@@ -70,7 +102,28 @@ def _artifact_check(result: CompileResult) -> ConformanceCheck:
     if not artifact.is_file() or artifact.stat().st_size == 0:
         return ConformanceCheck("L0", "asset_import", FAIL, "compiled artifact is missing or empty")
     try:
-        if result.backend == "mujoco":
+        genesis_marked = _has_genesis_render_marker(result)
+        if genesis_marked:
+            if result.backend != "genesis":
+                raise ValueError(
+                    "Genesis render artifact/manifest cannot be relabeled as "
+                    f"backend {result.backend!r}"
+                )
+            from .genesis_runtime import validate_scene_config, verify_package_binding
+
+            scene = json.loads(artifact.read_text(encoding="utf-8"))
+            validate_scene_config(scene)
+            if scene.get("package_digest") != result.package_digest:
+                raise ValueError("Genesis scene package digest mismatch")
+            binding = verify_package_binding(scene, artifact)
+            if not binding.get("scene_contract_verified"):
+                raise ValueError("Genesis scene is not bound to its canonical package")
+            runner = Path(str(result.metadata.get("render_runner") or ""))
+            if not runner.is_file():
+                raise ValueError("Genesis render runner is missing")
+            if result.metadata.get("render_only") is not True:
+                raise ValueError("Genesis compile result is not marked render-only")
+        elif result.backend == "mujoco":
             ET.parse(artifact)
         elif result.backend == "metasim":
             ast.parse(artifact.read_text(encoding="utf-8"))
@@ -322,6 +375,15 @@ def _policy_check(
     )
 
 
+def _genesis_render_only_checks() -> tuple[ConformanceCheck, ConformanceCheck, ConformanceCheck]:
+    detail = "Genesis v1 is render-only; runtime and policy conformance are not evaluated"
+    return (
+        ConformanceCheck("L2", "task_semantics", NOT_EVALUATED, detail),
+        ConformanceCheck("L3", "trajectory_replay", NOT_EVALUATED, detail),
+        ConformanceCheck("L4", "policy_behavior", NOT_EVALUATED, detail),
+    )
+
+
 def evaluate_conformance(
     source_package: EnvironmentPackage,
     target_compile: CompileResult | str | Path,
@@ -340,27 +402,35 @@ def evaluate_conformance(
 
     result = target_compile if isinstance(target_compile, CompileResult) else CompileResult.read(target_compile)
     target_package = import_compile_manifest(result.manifest_path)
-    checks = (
+    foundational_checks = (
         _artifact_check(result),
         _structural_check(source_package, target_package, pose_tolerance_m=pose_tolerance_m),
-        _runtime_semantics_check(
-            source_package,
-            target_package,
-            _load_mapping(source_runtime),
-            _load_mapping(target_runtime),
-        ),
-        _trajectory_check(
-            _load_mapping(source_runtime),
-            _load_mapping(target_runtime),
-            state_tolerance_m=state_tolerance_m,
-        ),
-        _policy_check(
-            _load_mapping(source_policy),
-            _load_mapping(target_policy),
-            success_rate_tolerance=success_rate_tolerance,
-            minimum_episodes=minimum_policy_episodes,
-        ),
     )
+    if _has_genesis_render_marker(result):
+        checks = (*foundational_checks, *_genesis_render_only_checks())
+    else:
+        source_runtime_evidence = _load_mapping(source_runtime)
+        target_runtime_evidence = _load_mapping(target_runtime)
+        checks = (
+            *foundational_checks,
+            _runtime_semantics_check(
+                source_package,
+                target_package,
+                source_runtime_evidence,
+                target_runtime_evidence,
+            ),
+            _trajectory_check(
+                source_runtime_evidence,
+                target_runtime_evidence,
+                state_tolerance_m=state_tolerance_m,
+            ),
+            _policy_check(
+                _load_mapping(source_policy),
+                _load_mapping(target_policy),
+                success_rate_tolerance=success_rate_tolerance,
+                minimum_episodes=minimum_policy_episodes,
+            ),
+        )
     highest: str | None = None
     for check in checks:
         if check.status != PASS:
