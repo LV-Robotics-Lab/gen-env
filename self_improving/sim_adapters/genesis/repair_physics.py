@@ -17,7 +17,14 @@ from self_improving.sim_adapters.genesis import repair_geometry as geo
 from self_improving.sim_adapters.genesis import repair_numerics as numerics
 from self_improving.sim_adapters.genesis import scene_layout as spatial
 from self_improving.sim_adapters.genesis import validate_asset_scene as native
-from self_improving.sim_adapters.genesis.physics_math import angle, rotation
+from self_improving.sim_adapters.genesis.physics_math import (
+    angle,
+    effective_speed,
+    free_fall_step,
+    longest_run,
+    rotation,
+    stiffness_floor,
+)
 from self_improving.sim_adapters.genesis.storage_paths import local_path
 
 SETTINGS = dict(
@@ -32,14 +39,36 @@ SETTINGS = dict(
     gravity=[0.0, 0.0, -9.81],
     iterations=50,
     tolerance=1e-8,
-    constraint_timeconst=0.01,
+    # Twice dt or more. Genesis silently clamps below that and the solve destabilises,
+    # which is what produced the contact-dropout limit cycle this trace used to read as
+    # motion. See satisfiable().
+    constraint_timeconst=0.05,
+    # The solver option above only reaches geoms that carry no time constant of their own,
+    # and the real MJCF assets author solref="0.001 1" on every geom. Raising the option
+    # alone therefore changes nothing for them: Genesis clamps each authored value up to
+    # 2*dt and runs the contact solve at the stiffness floor regardless. The frozen solref
+    # below is applied to every geom, ground included, and read back to confirm it took.
+    contact_solref=[0.05, 1.0],
+    # None keeps each geom's authored solimp; only the stiffness is overridden.
+    contact_solimp=None,
     friction_cone="pyramidal",
     contact_resolution="convex",
     impratio=1.0,
     use_hibernation=False,
     precision="32",
     backend="cpu",
-    effective_speed_mps=0.01,
+    # Rest is decided on pose evolution over the window; these were diagnostics before.
+    drift_rate_mps=0.002,
+    excursion_m=0.001,
+    rotation_rate_dps=1.0,
+    # Effective speed max(|v|, r*|w|) is the auxiliary. Its limit is derived per dt in
+    # settings() and always sits above that step's g*dt, and motion has to persist for
+    # speed_run_steps consecutive samples rather than show up as a bare sample fraction.
+    speed_floor_multiple=1.5,
+    speed_run_steps=5,
+    # Dropout is its own criterion, so it stops being counted twice as lost speed and
+    # lost support. stable_fraction/support_fraction stay as the user-set contracts.
+    contact_dropout_max=0.05,
     stable_fraction=0.95,
     support_fraction=0.95,
     support_force_n=1e-6,
@@ -64,6 +93,40 @@ def settings(profile=geo.PROFILE, numerics_profile="legacy"):
         cfg.update(profile=profile, stable_fraction=0.75, support_fraction=0.75,
                    fraction_comparison="strictly_greater")
     cfg.update(numerics.configuration(numerics_profile))
+    # Derived after the numerical profile, which is what actually sets dt and timeconst.
+    cfg["effective_speed_mps"] = round(cfg["speed_floor_multiple"] * free_fall_step(cfg), 6)
+    return satisfiable(cfg)
+
+
+def satisfiable(cfg):
+    """Reject acceptance limits no resting body can meet, before any scene is blamed.
+
+    This is the guard asset_physics and scene_stabilization already carried and this
+    entrance did not, which is why an unsatisfiable speed limit could sit here unnoticed:
+    a resting body loses its contact set for single steps and reads exactly one free-fall
+    step of speed, so any limit at or below g*dt fails on every scene ever built.
+    """
+    floor = free_fall_step(cfg)
+    if cfg["effective_speed_mps"] <= floor:
+        raise ValueError(
+            f"effective speed limit {cfg['effective_speed_mps']} m/s is unsatisfiable: one "
+            f"free-fall step at dt={cfg['dt']} is {floor:.5f} m/s"
+        )
+    if cfg["speed_run_steps"] < 2:
+        raise ValueError("speed criterion must span consecutive steps, not a single sample")
+    window_s = cfg["window_samples"] * cfg["dt"]
+    if cfg["drift_rate_mps"] * window_s < cfg["dt"] * floor:
+        raise ValueError("drift rate limit is below one free-fall step of travel")
+    if not 0.0 <= cfg["contact_dropout_max"] < 1.0:
+        raise ValueError("contact dropout limit must be a fraction below one")
+    floor_s = stiffness_floor(cfg)
+    for label, value in (("constraint_timeconst", cfg["constraint_timeconst"]),
+                         ("contact_solref time constant", cfg["contact_solref"][0])):
+        if value < floor_s:
+            raise ValueError(
+                f"{label} {value} s sits below the Genesis stability floor 2*dt = "
+                f"{floor_s} s and would be silently clamped"
+            )
     return cfg
 
 
@@ -168,21 +231,21 @@ def evaluate(data, rows, *, initial_rejected=False):
             metrics[n]["evaluated_window"] = False
             continue
         states = [r["objects"][n] for r in window]
-        effective = [
-            max(
-                np.linalg.norm(s["velocity"]), a["radius_m"] * np.linalg.norm(s["angular_velocity"])
-            )
-            for s in states
-        ]
+        effective = [effective_speed(s, a["radius_m"]) for s in states]
         stable = sum(v < cfg["effective_speed_mps"] for v in effective) / len(states)
-        hits, min_margin, min_ratio, max_tilt = 0, None, 1.0, 0.0
+        # Consecutive samples over the limit, the way Genesis decides rest. A bare
+        # fraction cannot tell one-sample dropout spikes from a body genuinely creeping.
+        run = longest_run(v >= cfg["effective_speed_mps"] for v in effective)
+        hits, touching, min_margin, min_ratio, max_tilt = 0, 0, None, 1.0, 0.0
         for row in window:
             force = sum(
                 c["force_a" if c["a"] == n else "force_b"][2]
                 for c in row["contacts"]
                 if {c["a"], c["b"]} == {n, a["support"]}
             )
-            hits += force > cfg["support_force_n"]
+            in_contact = any(n in (c["a"], c["b"]) for c in row["contacts"])
+            touching += in_contact
+            hits += in_contact and force > cfg["support_force_n"]
             state = row["objects"][n]
             up = rotation(state["orientation_wxyz"]) @ np.array(a["natural_up"])
             max_tilt = max(max_tilt, float(np.degrees(np.arccos(np.clip(up[2], -1, 1)))))
@@ -197,11 +260,29 @@ def evaluate(data, rows, *, initial_rejected=False):
                 margin, ratio = geo.support_metrics(a, state, assets[parent], ps)
                 min_margin = margin if min_margin is None else min(margin, min_margin)
                 min_ratio = min(min_ratio, ratio)
-        support = hits / len(states)
+        # Support is asked of the samples where the body is touching something; the
+        # dropout samples are charged once, to contact_continuity, instead of twice.
+        support = hits / touching if touching else 0.0
+        dropout = (len(states) - touching) / len(states)
+        # Primary rest criterion: where the body actually goes over the window.
+        track = np.array([s["position"] for s in states], dtype=float)
+        window_s = len(states) * cfg["dt"]
+        drift_rate = float(np.linalg.norm(track[-1] - track[0])) / window_s
+        excursion = float(np.linalg.norm(track - track.mean(0), axis=1).max())
+        rotation_rate = (
+            angle(states[-1]["orientation_wxyz"], states[0]["orientation_wxyz"]) / window_s
+        )
         if not a["fixed"]:
-            if not fraction_passes(stable, cfg, "stable_fraction"):
+            if drift_rate > cfg["drift_rate_mps"] or excursion > cfg["excursion_m"]:
+                failures[n].append("pose_drift")
+            if rotation_rate > cfg["rotation_rate_dps"]:
+                failures[n].append("pose_rotation")
+            if run >= cfg["speed_run_steps"] or not fraction_passes(stable, cfg,
+                                                                    "stable_fraction"):
                 failures[n].append("stable_velocity")
-            if not fraction_passes(support, cfg, "support_fraction"):
+            if dropout > cfg["contact_dropout_max"]:
+                failures[n].append("contact_continuity")
+            if not touching or not fraction_passes(support, cfg, "support_fraction"):
                 failures[n].append("support_preserved")
             if max_tilt > a["tip_limit_deg"]:
                 failures[n].append("tipped")
@@ -221,14 +302,26 @@ def evaluate(data, rows, *, initial_rejected=False):
                 {c["b"] if c["a"] == n else c["a"] for c in object_contacts}
             ),
             effective_velocity_max_mps=max(effective),
+            effective_velocity_limit_mps=cfg["effective_speed_mps"],
+            overspeed_run_steps=run,
+            overspeed_run_limit=cfg["speed_run_steps"],
             stable_fraction=stable,
             support_fraction=support,
+            touching_samples=touching,
+            window_samples=len(states),
+            contact_dropout_fraction=dropout,
+            contact_dropout_limit=cfg["contact_dropout_max"],
+            window_drift_rate_mps=drift_rate,
+            window_excursion_m=excursion,
+            window_rotation_rate_dps=rotation_rate,
             minimum_margin_m=min_margin,
             minimum_support_ratio=min_ratio,
             maximum_tilt_deg=max_tilt,
             normalized_drift=drift,
             rotation_drift_deg=turn,
             drift_score=drift / 0.01 + turn / 3,
+            # Window pose evolution is now a hard criterion; this whole-run number stays
+            # a report of how far the body moved from where it was placed.
             drift_is_hard=False,
         )
     for relation in data["relations"]:
@@ -341,8 +434,10 @@ def simulate(data, out, check):
             )
         scene.build()
         report["rigid_options"] = scene.rigid_solver._options.model_dump(mode="json")
-        if numerical:
-            report["contact_parameter_audit"] = numerics.apply_contact_parameters(entities, cfg)
+        # Applied for every profile, not only the versioned numerical ones: an asset that
+        # authors its own contact stiffness would otherwise keep it and quietly run the
+        # solve at the floor while the evidence recorded the value that was requested.
+        report["contact_parameter_audit"] = numerics.apply_contact_parameters(entities, cfg)
         check()
         owners, links, references, masses = {}, {}, {}, {}
         for n, e in entities.items():

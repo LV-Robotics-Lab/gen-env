@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import urllib.error
 import urllib.request
@@ -18,6 +19,10 @@ PROMPT = """你负责从图片中选择一个单物体资产。用户描述和�
 selected 必须给出已有候选编号；rejected 必须用 null。不要生成路径或资产名称。
 """
 MAX_RESPONSE_BYTES = 1024 * 1024
+# The prompt forbids Markdown, but models still wrap the object in a code fence.
+# Unwrapping a complete fence is transport formatting; every field below is still
+# validated exactly as before, and anything else is parsed unchanged.
+FENCE = re.compile(r"\A\s*```[A-Za-z0-9_+-]*[ \t]*\r?\n(.*?)\r?\n?[ \t]*```\s*\Z", re.S)
 
 
 class SelectionError(ValueError):
@@ -41,6 +46,10 @@ def strict_json(text):
     def constant(_):
         raise SelectionError("nonfinite_json")
 
+    if isinstance(text, str):
+        fenced = FENCE.match(text)
+        if fenced:
+            text = fenced.group(1)
     try:
         return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
     except (ValueError, TypeError, RecursionError):

@@ -70,27 +70,33 @@ def inspect(path):
     ir, com = transform(inertial)
     result = dict(mass=mass, com=com, inertia=ir @ tensor @ ir.T)
     for kind in ("visual", "collision"):
-        parts = []
+        parts, cells, offset = [], [], 0
         for node in link.findall(kind):
             geometry = node.find("geometry")
             mesh = geometry.find("mesh")
             if mesh is not None:
                 ref = library.local_reference(path, mesh.get("filename"), path.parent)
                 scene = trimesh.load(ref, force="scene", process=False)
-                points = np.concatenate(
-                    [
-                        np.asarray(g.vertices) @ t[:3, :3].T + t[:3, 3]
-                        for name in scene.graph.nodes_geometry
-                        for t, key in [scene.graph[name]]
-                        for g in [scene.geometry[key]]
-                    ]
-                )
+                chunks = [
+                    (np.asarray(g.vertices) @ t[:3, :3].T + t[:3, 3], np.asarray(g.faces, int))
+                    for name in scene.graph.nodes_geometry
+                    for t, key in [scene.graph[name]]
+                    for g in [scene.geometry[key]]
+                ]
+                points = np.concatenate([c[0] for c in chunks])
+                # Reindex each chunk's faces onto the concatenated vertex array.
+                base, indices = 0, []
+                for chunk, faces in chunks:
+                    indices.append(faces + base)
+                    base += len(chunk)
+                triangles = np.concatenate(indices) if indices else np.empty((0, 3), int)
                 scale = vector(mesh.get("scale"), "1 1 1")
                 if np.any(scale <= 0):
                     raise ValueError("nonpositive mesh scale")
                 points *= scale
             elif geometry.find("box") is not None:
-                points = trimesh.creation.box(vector(geometry.find("box").get("size"), "")).vertices
+                box = trimesh.creation.box(vector(geometry.find("box").get("size"), ""))
+                points, triangles = box.vertices, np.asarray(box.faces, int)
             else:
                 raise ValueError("unsupported geometry for independent URDF audit")
             r, p = transform(node)
@@ -98,9 +104,14 @@ def inspect(path):
             if not len(points) or not np.isfinite(points).all():
                 raise ValueError("empty or nonfinite geometry")
             parts.append(points)
+            cells.append(np.asarray(triangles, int) + offset)
+            offset += len(points)
         if not parts:
             raise ValueError(f"missing {kind} geometry")
         result[kind] = np.concatenate(parts)
+        result[kind + "_faces"] = (
+            np.concatenate(cells) if cells else np.empty((0, 3), int)
+        )
         result[kind + "_count"] = len(parts)
     return result
 

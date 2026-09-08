@@ -21,7 +21,13 @@ from self_improving.sim_adapters.genesis import build_official_index as official
 from self_improving.sim_adapters.genesis import clip_select as clip
 from self_improving.sim_adapters.genesis import scene_layout as spatial
 from self_improving.sim_adapters.genesis import standard_urdf as standard
+from self_improving.sim_adapters.genesis import visual_support as visuals
 from self_improving.sim_adapters.genesis.physics_math import rotation
+
+# A body whose lowest measured vertex is within this of the plane is resting on it. Set to
+# the acceptance penetration limit: closer than the depth the solve is allowed to overlap by
+# is indistinguishable from contact, and anything further is genuinely airborne.
+GROUND_CONTACT_M = 0.001
 
 VERSION = "genenv.simfoundry_scene_import.v1"
 
@@ -232,13 +238,28 @@ def convert(scene_dir, library_path, output_dir, *, scene_file=None, pose_format
             collision_vertex_count=len(measured["collision"]),
         )
         prepared.append((package, pkg, relative))
+    # The source declares no relations, but a body whose measured lowest vertex sits on the
+    # environment plane is resting on it, and that is a support relation the scene really
+    # has. Derived rather than assumed: the reading comes from the loaded geometry and
+    # scene_physics_graph re-checks every step that the body stays above the plane. A body
+    # floating clear of it gets no relation and is then correctly reported as unsupported,
+    # which is what used to be silently true of every imported scene.
+    resting = [
+        dict(relation="on", source=o["object_id"], target=spatial.GROUND,
+             evidence="measured: lowest world vertex on the environment plane")
+        for o in objects
+        if not o["fixed"]
+        and env["ground"] is not None
+        and abs(geometry[o["object_id"]]["world_bounds"][0][2] - env["z_m"]) <= GROUND_CONTACT_M
+    ]
     graph = dict(
         schema_version=spatial.SCHEMA,
         nodes=[{k: o[k] for k in ("object_id", "category", "asset_id")} for o in objects],
-        edges=[],
+        edges=list(resting),
         preferences=[],
         preference_source="none",
-        relations_status="not_provided_by_source",
+        relations_status="derived_from_measured_geometry" if resting
+        else "not_provided_by_source",
         environment=env,
         frame=dict(up="+Z", right="+X", front="-Y", units="m"),
         source_frame_policy="preserve_world_axes_without_reorientation",
@@ -250,7 +271,7 @@ def convert(scene_dir, library_path, output_dir, *, scene_file=None, pose_format
         solver_version=VERSION,
         layout_method="import_source_poses",
         objects=objects,
-        relations=[],
+        relations=list(resting),
         support_surfaces={},
         environment=env,
         physics_steps=0,
@@ -345,10 +366,16 @@ def verify(directory):
             or pkg["files"] != obj["source_files"]
         ):
             raise ValueError("scene asset binding mismatch")
+    surface = visuals.load(root)
+    if surface is not None:
+        if "visual_support.json" not in bound or surface["mesh"] not in bound:
+            raise ValueError("unbound visual support surface")
+        # Re-measured from the written mesh, not read back from the record that claims it.
+        visuals.verify_top_face(root, surface, layout["environment"]["z_m"])
     return layout
 
 
-def preview(directory, output_dir):
+def preview(directory, output_dir, *, final_state=None, reference_camera=None, orbit=False):
     """Load dynamic URDFs at the imported world poses, audit, render with zero steps."""
     from PIL import Image
 
@@ -356,6 +383,21 @@ def preview(directory, output_dir):
     if out.is_relative_to(root) or root.is_relative_to(out):
         raise ValueError("preview and scene package must be separate")
     layout = verify(root)
+    if final_state is not None:
+        import copy
+        layout = copy.deepcopy(layout)
+        # The environment plane appears in a trajectory as a body but is not a scene
+        # object: it is fixed, analytic, and has no pose to restore. Excluded by name here
+        # rather than loosened to a subset check, so a genuinely missing or extra object
+        # is still caught.
+        moved = set(final_state["objects"]) - {spatial.GROUND}
+        if moved != {o["object_id"] for o in layout["objects"]}:
+            raise ValueError("final state object set mismatch")
+        for obj in layout["objects"]:
+            state = final_state["objects"][obj["object_id"]]
+            obj["translation_m"] = vector(state["position"], 3).tolist()
+            rotation(state["orientation_wxyz"])
+            obj["orientation_wxyz"] = vector(state["orientation_wxyz"], 4).tolist()
     out.mkdir(parents=True, exist_ok=False)
     os.environ["GS_HEADLESS"] = "1"
     os.environ["PYGLET_HEADLESS"] = "1"
@@ -397,14 +439,27 @@ def preview(directory, output_dir):
             ),
         )
         env = layout["environment"]
+        surface = visuals.load(root)
         if env["ground"]:
             scene.add_entity(
                 gs.morphs.Plane(
                     pos=env["position_m"],
                     quat=env["orientation_wxyz"],
-                    visualization=env["visible"],
+                    # Hidden when a visual surface stands in for it, so the checkerboard
+                    # does not show through the desk that replaces it.
+                    visualization=env["visible"] and surface is None,
                 )
             )
+        if surface is not None:
+            # collision=False is what keeps this out of physics; it is re-asserted by
+            # verify() from the written mesh rather than trusted from this call site.
+            scene.add_entity(
+                gs.morphs.Mesh(file=str(root / surface["mesh"]), fixed=True,
+                               collision=False, visualization=True),
+                name="visual_support",
+                vis_mode="visual",
+            )
+            report["visual_support"] = surface
         entities = {}
         for obj in layout["objects"]:
             _, entry, physics = standard.verify_package(root / obj["standard_package"])
@@ -420,6 +475,13 @@ def preview(directory, output_dir):
         camera = scene.add_camera(
             res=(960, 720), GUI=False, pos=(1, -1, 1), lookat=(0, 0, 0), fov=35
         )
+        reference = None
+        if reference_camera is not None:
+            width, height = reference_camera["resolution"]
+            intrinsics = np.asarray(reference_camera["intrinsics"], float)
+            fov = float(np.rad2deg(2 * np.arctan(height / (2 * intrinsics[1, 1]))))
+            reference = scene.add_camera(res=(width, height), GUI=False,
+                                         pos=(1, -1, 1), lookat=(0, 0, 0), fov=fov)
         scene.build()
         for obj in layout["objects"]:
             entity = entities[obj["object_id"]]
@@ -442,6 +504,7 @@ def preview(directory, output_dir):
             report["geometry"].append(
                 dict(object_id=obj["object_id"], world_vertex_error_m=error, **audit)
             )
+            obj["world_visual_bounds_m"] = [actual.min(0).tolist(), actual.max(0).tolist()]
         boxes = np.array([o["world_visual_bounds_m"] for o in layout["objects"]])
         low, high = boxes[:, 0].min(axis=0), boxes[:, 1].max(axis=0)
         center = (low + high) / 2
@@ -461,6 +524,37 @@ def preview(directory, output_dir):
             path = out / f"{name}.png"
             Image.fromarray(np.asarray(rgb, np.uint8)).save(path)
             report["views"].append(official.fingerprint(path, out))
+        if reference_camera is not None:
+            transform = np.asarray(reference_camera["cam2world"], dtype=float)
+            if transform.shape != (4, 4) or not np.isfinite(transform).all():
+                raise ValueError("invalid reference camera transform")
+            reference.set_pose(pos=transform[:3, 3].tolist(),
+                            lookat=(transform[:3, 3] + transform[:3, 2]).tolist(),
+                            up=(-transform[:3, 1]).tolist())
+            rgb = reference.render(rgb=True)[0]
+            Image.fromarray(np.asarray(rgb, np.uint8)).save(out / "reference.png")
+            report["views"].append(official.fingerprint(out / "reference.png", out))
+            report["reference_camera"] = dict(**reference_camera,
+                                             projection="source_vertical_fov_centered_pinhole")
+        if orbit:
+            import hashlib
+
+            import imageio.v2 as imageio
+            with imageio.get_writer(out / "orbit.mp4", fps=12) as writer:
+                for angle in np.linspace(0, 2 * np.pi, 120, endpoint=False):
+                    direction = np.array([np.cos(angle), np.sin(angle), 0.7])
+                    camera.set_pose(pos=(center + distance * direction /
+                                         np.linalg.norm(direction)).tolist(),
+                                    lookat=center.tolist(), up=(0, 0, 1))
+                    writer.append_data(np.asarray(camera.render(rgb=True)[0], np.uint8))
+            with imageio.get_reader(out / "orbit.mp4") as reader:
+                hashes = [hashlib.sha256(frame.tobytes()).hexdigest() for frame in reader]
+            if len(hashes) != 120:
+                raise ValueError("incomplete orbit video")
+            report["video"] = dict(total_frames=len(hashes), unique_frames=len(set(hashes)),
+                                   fps=12, kind=("camera_orbit_of_validated_static_scene"
+                                                 if final_state is not None
+                                                 else "camera_orbit_of_source_scene"))
         verify(root)
         report["status"] = "passed"
     except BaseException as exc:

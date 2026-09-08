@@ -22,3 +22,14 @@ profiles:
     timeout_s: 120
     max_attempts: 3
     cache_dir: data/scene_gen/parse_cache
+
+  # OpenRouter is OpenAI-compatible, so it needs no transport of its own. Note the model
+  # id is namespaced by vendor: plain "gpt-4o" is rejected there, "openai/gpt-4o" is not.
+  openrouter:
+    endpoint: https://openrouter.ai/api/v1
+    model: openai/gpt-4o
+    api_mode: chat
+    api_key: "replace-with-your-openrouter-api-key"
+    timeout_s: 120
+    max_attempts: 3
+    cache_dir: data/scene_gen/parse_cache

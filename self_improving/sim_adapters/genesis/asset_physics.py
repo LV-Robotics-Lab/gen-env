@@ -9,26 +9,52 @@ from scipy.spatial import ConvexHull
 
 from self_improving.sim_adapters.genesis import build_scene as geometry
 from self_improving.sim_adapters.genesis import scene_layout as spatial
-from self_improving.sim_adapters.genesis.physics_math import angle, rotation
+from self_improving.sim_adapters.genesis.physics_math import (
+    angle,
+    effective_speed,
+    free_fall_step,
+    longest_run,
+    rotation,
+    stiffness_floor,
+    sweep_radius,
+)
 
-SCHEMA = "genenv.asset_physics.v1"
+SCHEMA = "genenv.asset_physics.v2"
 DEFAULTS = dict(
     dt=0.004,
     steps=1000,
     substeps=1,
     seed=0,
     window_s=0.5,
+    # Rest is decided on pose evolution. These are the primary criteria: where the body
+    # ends up over the window, not how fast a single sample says it was moving.
     translation_m=0.001,
     rotation_deg=0.5,
-    speed_mps=0.01,
-    angular_speed_radps=0.05,
+    drift_rate_mps=0.002,
+    excursion_m=0.001,
+    rotation_rate_dps=1.0,
+    # Effective speed max(|v|, r*|w|) is the auxiliary, weighted by sweep radius the way
+    # Genesis weights its own rest test. Its limit is derived per profile in settings():
+    # a shared constant is unsatisfiable at one step size and slack at the other. Motion
+    # must persist for speed_run_steps consecutive samples, because an isolated sample
+    # above the limit is the contact-dropout artefact rather than the body moving.
+    speed_floor_multiple=1.5,
+    speed_run_steps=5,
+    # Dropout is a first-class criterion with its own bound, so it stops leaking into the
+    # speed and support readings as if it were motion or a missing support.
+    contact_dropout_max=0.05,
+    # Support asks "while touching, is the declared parent holding it", so the denominator
+    # is the touching samples only; the dropout bound above covers the rest.
     support_fraction=0.8,
     support_force_n=1e-6,
     penetration_m=0.001,
     margin_m=0.02,
     surface_tilt_deg=0.5,
     gravity=[0.0, 0.0, -9.81],
-    constraint_timeconst=0.001,
+    # Genesis clamps constraint_timeconst up to twice the step and warns. The former
+    # 0.001 was silently clamped to that floor -- the stiffest the step allows and the
+    # least stable -- which is what drove the contact-dropout limit cycle.
+    constraint_timeconst=0.05,
     iterations=50,
     ls_iterations=50,
     tolerance=1e-8,
@@ -43,10 +69,64 @@ class PhysicsFailure(ValueError):
     """An observed physical violation, as opposed to missing or invalid evidence."""
 
 
-def settings(profile):
+NUMERICAL_KEYS = frozenset(
+    {"dt", "steps", "substeps", "constraint_timeconst", "iterations", "ls_iterations",
+     "tolerance", "contact_solref", "contact_solimp"}
+)
+
+
+def settings(profile, numerics=None):
+    """Acceptance thresholds for a profile, optionally on a different numerical footing.
+
+    `numerics` may change how the trajectory is computed and never what counts as passing:
+    only NUMERICAL_KEYS are accepted, so a caller searching for a workable solve cannot
+    reach the thresholds it is being judged against. Everything derived from the step size
+    is recomputed afterwards and re-checked by satisfiable().
+    """
     if profile not in ("baseline", "half_dt"):
         raise ValueError("unknown physics profile")
-    return dict(DEFAULTS, **({"dt": 0.002, "steps": 2000} if profile == "half_dt" else {}))
+    cfg = dict(DEFAULTS, **({"dt": 0.002, "steps": 2000} if profile == "half_dt" else {}))
+    if numerics:
+        offered = {k: v for k, v in numerics.items() if k in NUMERICAL_KEYS}
+        thresholds = set(numerics) & set(DEFAULTS) - NUMERICAL_KEYS
+        if thresholds:
+            raise ValueError(
+                f"numerics override may not set acceptance thresholds: {sorted(thresholds)}"
+            )
+        # Simulated duration is held fixed while the step size moves, so two runs remain
+        # comparable: a shorter trace would reach the terminal window before the same
+        # physical time and quietly change what "settled" is being asked about.
+        seconds = cfg["steps"] * cfg["dt"]
+        cfg.update(offered)
+        if "dt" in offered and "steps" not in numerics:
+            cfg["steps"] = round(seconds / cfg["dt"])
+    # Each profile is calibrated against its own discretisation floor. Sharing one speed
+    # constant across step sizes is what made the limit unsatisfiable at the coarse step.
+    cfg["effective_speed_mps"] = round(cfg["speed_floor_multiple"] * free_fall_step(cfg), 6)
+    return satisfiable(cfg)
+
+
+def satisfiable(cfg):
+    """Reject acceptance limits no resting body can meet, before any scene is blamed."""
+    floor = free_fall_step(cfg)
+    if cfg["effective_speed_mps"] <= floor:
+        raise ValueError(
+            f"speed limit {cfg['effective_speed_mps']} m/s is unsatisfiable: one free-fall "
+            f"step at dt={cfg['dt']} is {floor:.5f} m/s"
+        )
+    if cfg["speed_run_steps"] < 2:
+        raise ValueError("speed criterion must span consecutive steps, not a single sample")
+    if cfg["drift_rate_mps"] * cfg["window_s"] < cfg["dt"] * floor:
+        raise ValueError("drift rate limit is below one free-fall step of travel")
+    if not 0.0 <= cfg["contact_dropout_max"] < 1.0:
+        raise ValueError("contact dropout limit must be a fraction below one")
+    stiffness = stiffness_floor(cfg)
+    if cfg["constraint_timeconst"] < stiffness:
+        raise ValueError(
+            f"constraint_timeconst {cfg['constraint_timeconst']} s sits below the Genesis "
+            f"stability floor 2*dt = {stiffness} s and would be silently clamped to it"
+        )
+    return cfg
 
 
 def finite(value, shape, label):
@@ -178,34 +258,73 @@ def evaluate(data, loaded, rows):
             float(np.linalg.norm(np.array(s["position"]) - final["position"])) for s in states
         )
         degrees = max(angle(s["orientation_wxyz"], final["orientation_wxyz"]) for s in states)
-        speed = max(float(np.linalg.norm(s["velocity"])) for s in states)
-        angular = max(float(np.linalg.norm(s["angular_velocity"])) for s in states)
         if not spec["fixed"]:
+            radius = sweep_radius(body["visual_hull_local_m"])
+            effective = [effective_speed(s, radius) for s in states]
+            track = np.array([s["position"] for s in states], dtype=float)
+            drift_rate = float(np.linalg.norm(track[-1] - track[0])) / cfg["window_s"]
+            excursion = float(np.linalg.norm(track - track.mean(0), axis=1).max())
+            rotation_rate = (
+                angle(states[-1]["orientation_wxyz"], states[0]["orientation_wxyz"])
+                / cfg["window_s"]
+            )
+            # Pose evolution decides rest; the speed run is the auxiliary that catches a
+            # body creeping steadily enough to keep every pose delta inside its budget.
+            run = longest_run(v >= cfg["effective_speed_mps"] for v in effective)
             check(
                 f"{name}.settled",
                 displacement <= cfg["translation_m"]
                 and degrees <= cfg["rotation_deg"]
-                and speed <= cfg["speed_mps"]
-                and angular <= cfg["angular_speed_radps"],
+                and drift_rate <= cfg["drift_rate_mps"]
+                and excursion <= cfg["excursion_m"]
+                and rotation_rate <= cfg["rotation_rate_dps"]
+                and run < cfg["speed_run_steps"],
                 displacement_m=displacement,
                 rotation_deg=degrees,
-                speed_mps=speed,
-                angular_speed_radps=angular,
+                drift_rate_mps=drift_rate,
+                excursion_m=excursion,
+                rotation_rate_dps=rotation_rate,
+                effective_speed_max_mps=max(effective),
+                effective_speed_limit_mps=cfg["effective_speed_mps"],
+                overspeed_run_steps=run,
+                overspeed_run_limit=cfg["speed_run_steps"],
+                sweep_radius_m=radius,
             )
-            hits = 0
+            # Naming the contact-detection dropout keeps the artefact bounded and visible
+            # instead of letting it leak into the speed reading as if it were motion.
+            absent = sum(
+                not any(name in (c["a"], c["b"]) for c in row["contacts"]) for row in window
+            )
+            fraction = absent / len(window)
+            check(
+                f"{name}.contact_continuity",
+                fraction <= cfg["contact_dropout_max"],
+                dropout_fraction=fraction,
+                limit=cfg["contact_dropout_max"],
+            )
+            # Ask whether the declared parent is the one holding the body up, over the
+            # samples where it is touching anything at all. Counting the dropout samples
+            # here too would charge the same artefact twice and hide which one failed.
+            hits, touching = 0, 0
             for row in window:
-                force = 0.0
+                force, contact = 0.0, False
                 for c in row["contacts"]:
+                    if name not in (c["a"], c["b"]):
+                        continue
+                    contact = True
                     if {c["a"], c["b"]} == {name, spec["support"]}:
                         force += c["force_a" if c["a"] == name else "force_b"][2]
-                hits += force > cfg["support_force_n"]
-            fraction = hits / len(window)
+                touching += contact
+                hits += contact and force > cfg["support_force_n"]
+            fraction = hits / touching if touching else 0.0
             check(
                 f"{name}.support",
-                fraction >= cfg["support_fraction"],
+                touching > 0 and fraction >= cfg["support_fraction"],
                 target=spec["support"],
                 fraction=fraction,
                 limit=cfg["support_fraction"],
+                touching_samples=touching,
+                window_samples=len(window),
             )
         # All frames, including transient motion, must remain above the environment plane.
         minimum_z = min(float(world_vertices(body, r["objects"][name])[:, 2].min()) for r in rows)

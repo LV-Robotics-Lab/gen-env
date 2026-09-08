@@ -129,7 +129,8 @@ def test_replay_preserves_source_and_release_and_gates_final(tmp_path, monkeypat
             raise RuntimeError("interrupted after three steps")
         if mode == "failed":
             for row in rows[-51:]:
-                row["objects"]["a"]["velocity"] = [0.01, 0, 0]
+                row["objects"]["a"]["velocity"] = [2 * data["settings"]["effective_speed_mps"],
+                                                   0, 0]
         write_rows(out / "trace.jsonl", rows)
         return physics.evaluate(data, rows)
 

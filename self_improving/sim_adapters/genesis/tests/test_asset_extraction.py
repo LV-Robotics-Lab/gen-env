@@ -58,6 +58,25 @@ def test_four_objects_with_table_and_no_default_relations(tmp_path):
     assert 'workspace' not in result and result['environment']['ground'] == 'genesis_builtin'
 
 
+def test_english_support_locative_is_not_a_description():
+    """"on a table" is still a mention of the table; the preposition is not an attribute.
+
+    Only the Chinese locative was stripped, so plain English phrasing was rejected for
+    "dropping" a word no retrieval description should carry.
+    """
+    request = 'An apple and a yellow cup on a table.'
+    objects = [obj('apple', 'An apple', 'apple'),
+               obj('cup', 'a yellow cup', 'yellow cup', attributes=['yellow']),
+               obj('table', 'on a table', 'table')]
+    assert parsing.clean_objects(dict(objects=objects, ambiguities=[]), request)
+    # Descriptors after the preposition still may not disappear.
+    narrowed = copy.deepcopy(objects)
+    narrowed[2] = obj('table', 'on a wooden table', 'table')
+    with pytest.raises(ValueError, match='noun phrase'):
+        parsing.clean_objects(dict(objects=narrowed, ambiguities=[]),
+                              'An apple and a yellow cup on a wooden table.')
+
+
 def test_no_table_is_invented(tmp_path):
     objects = [obj('apple', '一个苹果'), obj('cup', '一个黄色杯子')]
     p, _ = provider(tmp_path, objects)

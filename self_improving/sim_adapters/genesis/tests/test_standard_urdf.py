@@ -97,25 +97,29 @@ def trajectory():
     ]
 
 
+# Measured lever arm of the fixture body, the value the runtime reads off the loaded mesh.
+RADIUS_M = 0.05
+
+
 def test_no_contact_cannot_pass_and_penetration_not_hidden():
     rows = trajectory()
     cfg = physics.asset_physics.settings("baseline")
     # Stationary screenshots cannot establish support: force must actually be observed.
     for row in rows[1:]:
         row["ground_up_force_n"] = 0
-    assert not next(c for c in physics.evaluate(rows, cfg) if c["name"] == "support_fraction")[
-        "passed"
-    ]
+    assert not next(
+        c for c in physics.evaluate(rows, cfg, RADIUS_M)[0] if c["name"] == "support_fraction"
+    )["passed"]
     rows = trajectory()
     rows[10]["contacts"] = [{"penetration": 0.00101}]
-    assert not next(c for c in physics.evaluate(rows, cfg) if c["name"] == "penetration_m")[
-        "passed"
-    ]
+    assert not next(
+        c for c in physics.evaluate(rows, cfg, RADIUS_M)[0] if c["name"] == "penetration_m"
+    )["passed"]
     with pytest.raises(ValueError, match="incomplete"):
-        physics.evaluate(rows[:-1], cfg)
+        physics.evaluate(rows[:-1], cfg, RADIUS_M)
     rows[8]["step"] = 9
     with pytest.raises(ValueError, match="nonsequential"):
-        physics.evaluate(rows, cfg)
+        physics.evaluate(rows, cfg, RADIUS_M)
 
 
 def test_changed_scale_or_fixed_body_rejected():

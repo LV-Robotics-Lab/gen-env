@@ -15,9 +15,11 @@ import numpy as np
 from self_improving.sim_adapters.genesis import asset_physics as evidence
 from self_improving.sim_adapters.genesis import build_official_index as official
 from self_improving.sim_adapters.genesis import import_simfoundry_scene as imported
+from self_improving.sim_adapters.genesis import scene_physics_graph as graph_rules
 from self_improving.sim_adapters.genesis import standard_urdf as standard
+from self_improving.sim_adapters.genesis import physics_criteria as criteria
 from self_improving.sim_adapters.genesis import validate_single_asset as single
-from self_improving.sim_adapters.genesis.physics_math import angle, rotation
+from self_improving.sim_adapters.genesis.physics_math import angle, rotation, sweep_radius
 from self_improving.sim_adapters.genesis.validate_asset_scene import contacts
 
 SCHEMA = "genenv.imported_scene_physics.v1"
@@ -43,6 +45,19 @@ def grounded_forces(row, minimum, fixed=()):
         n: sum(max(0.0, f) for (a, b), f in pairs.items() if a == n and b in grounded)
         for n in row["objects"]
     }, pairs
+
+
+# A body with no measured geometry gets the lever arm that reproduces the limit pair this
+# entrance used before: 0.01 m/s of slide against 0.05 rad/s of spin is a 0.2 m arm. The
+# single weighted speed then says the same thing the two separate limits used to say.
+LEGACY_SWEEP_RADIUS_M = 0.2
+
+
+def radius(name, geometry):
+    """Sweep radius from the measured hull; never a declared or assumed body size."""
+    if geometry is None or name not in geometry:
+        return LEGACY_SWEEP_RADIUS_M
+    return sweep_radius(geometry[name])
 
 
 def validate_scene_row(row, step, names, dt):
@@ -77,12 +92,12 @@ def validate_scene_row(row, step, names, dt):
                 raise ValueError("inconsistent contact force pair")
 
 
-def evaluate(rows, layout, cfg):
+def evaluate(rows, layout, cfg, geometry=None):
     bodies = {o["object_id"]: o for o in layout["objects"]}
     dynamic = {name: obj for name, obj in bodies.items() if not obj["fixed"]}
     fixed_bodies = {name for name, obj in bodies.items() if obj["fixed"]}
-    if fixed_bodies and fixed_bodies != {"support_0"}:
-        raise ValueError("fixed nested bodies are not dynamic imported objects")
+    if geometry is None and fixed_bodies and fixed_bodies != {"support_0"}:
+        raise ValueError("legacy fixed nested bodies must remain dynamic")
     if len(rows) != cfg["steps"] + 1:
         raise ValueError("incomplete trajectory")
     if not dynamic:
@@ -110,11 +125,17 @@ def evaluate(rows, layout, cfg):
                  ground_up_force_n=None if i == 0 else force_rows[i][0][name])
             for i, row in enumerate(rows)
         ]
-        checks = single.evaluate(local_rows, cfg)
+        checks, budget = single.evaluate(local_rows, cfg, radius(name, geometry))
         final = rows[-1]["objects"][name]
+        failed = [c["name"] for c in checks if not c["passed"]]
         results[name] = dict(
             category=obj["category"], checks=checks,
             passed=all(c["passed"] for c in checks),
+            # Whether a different numerical configuration could legitimately be tried, or
+            # whether this body really moved and retuning would only hide it.
+            failure_categories=criteria.classify(failed),
+            numerics_tunable=criteria.tunable(failed),
+            **budget,
             total_translation_m=float(np.linalg.norm(
                 np.array(final["position"]) - initial["position"])),
             total_rotation_deg=angle(final["orientation_wxyz"], initial["orientation_wxyz"]))
@@ -129,7 +150,14 @@ def evaluate(rows, layout, cfg):
         if a == b:
             continue
         forces = [pairs.get((a, b), 0.0) for _, pairs in window]
-        fraction = sum(force > cfg["support_force_n"] for force in forces) / len(window)
+        # Denominator is the samples where the pair is in contact at all. Contact-detection
+        # dropout is already bounded per object above; charging it here as well would count
+        # one artefact as both a lost contact and a missing support.
+        touching = sum((a, b) in pairs for _, pairs in window)
+        fraction = (
+            sum(force > cfg["support_force_n"] for force in forces) / touching
+            if touching else 0.0
+        )
         if fraction:
             observed.append(dict(
                 source=a, target=b, upward_force_fraction=fraction,
@@ -137,7 +165,7 @@ def evaluate(rows, layout, cfg):
     relation_results = []
     for relation in layout.get("relations", []):
         if relation["relation"] != "on":
-            raise ValueError("unsupported declared relationship")
+            continue
         fraction = max(
             [row["upward_force_fraction"] for row in observed
              if row["source"] == relation["source"] and row["target"] == relation["target"]],
@@ -148,12 +176,13 @@ def evaluate(rows, layout, cfg):
     stability = all(value["passed"] for value in results.values())
     declared = bool(relation_results)
     relations_passed = declared and all(r["passed"] for r in relation_results)
-    passed = stability and relations_passed
+    graph_checks = graph_rules.evaluate(rows, layout, geometry, cfg) if geometry else None
+    passed = stability and relations_passed and (graph_checks is None or graph_checks["passed"])
     physics_status = (
         "passed" if passed else "incomplete" if stability and not declared else "failed"
     )
     exit_code = 0 if passed else 3 if physics_status == "incomplete" else 2
-    return dict(
+    answer = dict(
         stability_status="passed" if stability else "failed",
         physics_status=physics_status, exit_code=exit_code,
         objects=results,
@@ -163,27 +192,37 @@ def evaluate(rows, layout, cfg):
         ),
         relation_results=relation_results, observed_support_contacts=observed,
         meaning="declared finite support is accepted only from solved upward contact force")
+    if graph_checks is not None:
+        answer["graph_checks"] = graph_checks
+    return answer
 
 
-def run(scene_package, output_dir, *, profile="baseline", friction_multiplier=1.0):
+def support_sdf(cell_size=None, max_res=None):
+    """Explicit finite-support distance-field override; no acceptance threshold changes."""
+    if cell_size is None and max_res is None:
+        return {}
+    if (isinstance(cell_size, bool) or not isinstance(cell_size, (int, float))
+            or not np.isfinite(cell_size) or not 0.0005 <= cell_size <= 0.005
+            or isinstance(max_res, bool) or not isinstance(max_res, int)
+            or not 32 <= max_res <= 384):
+        raise ValueError("support SDF requires cell size 0.0005..0.005 m and max res 32..384")
+    return dict(sdf_cell_size=float(cell_size), sdf_max_res=max_res)
+
+
+def run(scene_package, output_dir, *, profile="baseline", numerics=None, friction_multiplier=1.0,
+        support_sdf_cell_size=None, support_sdf_max_res=None):
+    sdf = support_sdf(support_sdf_cell_size, support_sdf_max_res)
     root, out = Path(scene_package).resolve(), Path(output_dir).resolve()
     if out.is_relative_to(root) or root.is_relative_to(out):
         raise ValueError("physics output and imported package must be separate")
     layout = imported.verify(root)
-    if layout["environment"]["ground"] is not None:
-        raise ValueError("finite support scenes must not contain an infinite ground plane")
-    fixed = [o for o in layout["objects"] if o["fixed"]]
-    dynamic = [o for o in layout["objects"] if not o["fixed"]]
-    if len(fixed) != 1 or fixed[0]["object_id"] != "support_0" or not dynamic:
-        raise ValueError("requires exactly one fixed finite support and dynamic foreground")
+    # Whether a ground plane is acceptable is topology()'s call now: it is a fixed root
+    # when a body explicitly declares it as support, and still no excuse for an undeclared
+    # one. Rejecting every scene with a plane here made "on the floor" unrepresentable.
+    graph_rules.topology(layout)
     if any(o["scale"] != 1 for o in layout["objects"]):
         raise ValueError("requires baked unit-scale assets")
-    expected_relations = {(o["object_id"], "support_0") for o in dynamic}
-    actual_relations = {
-        (r["source"], r["target"]) for r in layout["relations"] if r["relation"] == "on"
-    }
-    if actual_relations != expected_relations or len(layout["relations"]) != len(dynamic):
-        raise ValueError("every dynamic foreground object requires one declared support relation")
+    measured_geometry = graph_rules.geometry(root, layout)
     if not (0 < friction_multiplier <= 1.25):
         raise ValueError("invalid bounded friction multiplier")
     if any(
@@ -193,7 +232,7 @@ def run(scene_package, output_dir, *, profile="baseline", friction_multiplier=1.
     ):
         raise ValueError("nonzero saved velocity restoration is not implemented")
     out.mkdir(parents=True, exist_ok=False)
-    cfg = evidence.settings(profile)
+    cfg = evidence.settings(profile, numerics)
     frozen = dict(
         schema_version=SCHEMA,
         layout=layout,
@@ -202,9 +241,16 @@ def run(scene_package, output_dir, *, profile="baseline", friction_multiplier=1.
         scene_manifest_sha256=standard.library.sha256(root / "manifest.json"),
         genesis_commit=official.GENESIS_COMMIT,
         pose_policy="exact imported poses; no clearance, settling, or repair",
-        support_policy="declared upward contact force paths reaching fixed support_0",
+        support_policy="declared upward contact force paths reaching fixed roots",
         physics_profile=profile,
+        # Frozen so a stored run states the footing it was measured on, and verify_evidence
+        # can refuse a configuration a search invented for this one scene.
+        numerics=numerics,
+        numerics_profile=(numerics or {}).get("numerics_profile", "asset_physics_baseline"),
+        numerics_origin=(numerics or {}).get("numerics_origin", "default"),
         friction_multiplier=friction_multiplier,
+        support_sdf=sdf,
+        validation_geometry=measured_geometry,
     )
     official.write_json(out / "physics_input.json", frozen)
     input_hash = standard.library.sha256(out / "physics_input.json")
@@ -269,16 +315,27 @@ def run(scene_package, output_dir, *, profile="baseline", friction_multiplier=1.
             name = obj["object_id"]
             _, entry, physics = standard.verify_package(root / obj["standard_package"])
             expected[name] = standard.inspect(entry)
-            morph = standard.morph(gs, entry)
+            morph = standard.morph(gs, entry, fixed=obj["fixed"])
             morph.pos, morph.quat = tuple(obj["translation_m"]), tuple(obj["orientation_wxyz"])
             entities[name] = scene.add_entity(
                 morph,
                 name=name,
                 vis_mode="visual",
                 material=gs.materials.Rigid(
-                    friction=min(1.2, physics["friction"] * friction_multiplier)
+                    friction=physics["friction"] * friction_multiplier,
+                    **(sdf if obj["fixed"] else {}),
                 ),
             )
+        # The environment plane is a real entity, not just a contract root. Without it a
+        # scene whose only support is the floor has nothing to rest on and every body falls
+        # forever -- which the trace layer already anticipated (it expects a "ground" name
+        # when no fixed body exists) but the build never provided.
+        if layout["environment"]["ground"] is not None:
+            # gs.morphs.Plane() sits at z=0; a scene declaring any other height would be
+            # simulated against a floor it did not describe, so refuse rather than shift.
+            if layout["environment"]["z_m"] != 0:
+                raise ValueError("only a ground plane at z=0 is supported")
+            entities["ground"] = scene.add_entity(gs.morphs.Plane(), name="ground")
         camera = scene.add_camera(
             res=(960, 720), GUI=False, pos=(1, -1, 1), lookat=(0, 0, 0), fov=35
         )
@@ -293,12 +350,10 @@ def run(scene_package, output_dir, *, profile="baseline", friction_multiplier=1.
             name, entity = obj["object_id"], entities[obj["object_id"]]
             loaded["objects"][name] = standard.audit(
                 entity, expected[name], collision=not obj["fixed"],
-                friction=None if obj["fixed"] else min(
-                    1.2, obj["friction"] * friction_multiplier
-                ),
+                friction=None if obj["fixed"] else obj["friction"] * friction_multiplier,
             )
             if obj["fixed"] and (not entity.base_link.is_fixed or not entity.geoms):
-                raise ValueError("support_0 is not fixed and collidable")
+                raise ValueError("declared root is not fixed and collidable")
             actual = np.concatenate(
                 [array(g.get_vverts()).reshape(-1, 3) for link in entity.links for g in link.vgeoms]
             )
@@ -308,6 +363,9 @@ def run(scene_package, output_dir, *, profile="baseline", friction_multiplier=1.
                 raise ValueError("loaded world geometry differs from imported layout")
             loaded["objects"][name].update(
                 world_vertex_error_m=error,
+                loaded_sdf=[dict(cell_size_m=np.asarray(g.sdf_cell_size).tolist(),
+                                 resolution=np.asarray(g._sdf_res).tolist())
+                            for g in entity.geoms],
                 effective_contact_parameters=[
                     array(g.get_sol_params()).tolist() for g in entity.geoms
                 ],
@@ -390,7 +448,7 @@ def run(scene_package, output_dir, *, profile="baseline", friction_multiplier=1.
         durable = [json.loads(line) for line in (out / "trace.jsonl").read_text().splitlines()]
         if durable != rows:
             raise ValueError("durable trajectory mismatch")
-        result.update(evaluate(durable, layout, cfg), status="complete")
+        result.update(evaluate(durable, layout, cfg, measured_geometry), status="complete")
         # Even a stable trace lacks declared support semantics; keep renders diagnostic.
         (out / "diagnostics").mkdir()
         for name, direction, up in [
@@ -454,7 +512,10 @@ def verify_evidence(directory):
     if standard.library.sha256(out / "physics_input.json") != report["physics_input_sha256"]:
         raise ValueError("physics input binding mismatch")
     frozen = standard.library.read_json(out / "physics_input.json")
-    if frozen["settings"] != evidence.settings(frozen["physics_profile"]):
+    if frozen.get("numerics_origin") not in (None, "default", "registered"):
+        raise ValueError("evidence used an agent-proposed numerical configuration")
+    if frozen["settings"] != evidence.settings(
+            frozen["physics_profile"], frozen.get("numerics")):
         raise ValueError("unexpected physics thresholds")
     if (
         standard.library.sha256(Path(frozen["scene_package"]) / "manifest.json")
@@ -477,7 +538,11 @@ def verify_evidence(directory):
     if report["steps_executed"] != frozen["settings"]["steps"]:
         raise ValueError("incomplete executed steps")
     rows = [json.loads(line) for line in (out / "trace.jsonl").read_text().splitlines()]
-    result = evaluate(rows, frozen["layout"], frozen["settings"])
+    geometry = frozen.get("validation_geometry")
+    if geometry is not None and geometry != graph_rules.geometry(
+            Path(frozen["scene_package"]), frozen["layout"]):
+        raise ValueError("validation geometry differs from source assets")
+    result = evaluate(rows, frozen["layout"], frozen["settings"], geometry)
     if any(report[k] != v for k, v in result.items()):
         raise ValueError("persisted trajectory does not match verdict")
     return report
@@ -487,10 +552,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scene-package", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--profile", choices=("baseline", "half_dt"), default="baseline")
+    parser.add_argument("--profile", choices=("baseline", "half_dt"), default=None)
     parser.add_argument("--friction-multiplier", type=float, default=1.0)
+    parser.add_argument("--support-sdf-cell-size", type=float)
+    parser.add_argument("--support-sdf-max-res", type=int)
+    parser.add_argument("--resume", action="store_true")
     args = vars(parser.parse_args())
-    result = run(**args)
+    if args['profile'] is not None:
+        args.pop('resume')
+        result = run(**args)
+    else:
+        from self_improving.sim_adapters.genesis import scene_physics_workflow as workflow
+        args.pop('profile')
+        if args.pop('friction_multiplier') != 1.0:
+            raise ValueError("scene workflow preserves authored friction")
+        result = workflow.run(**args)
     print(json.dumps(result, ensure_ascii=False))
     return result["exit_code"]
 

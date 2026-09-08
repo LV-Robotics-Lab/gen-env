@@ -1,3 +1,8 @@
+> 2026-09-08 更新：`validate_imported_scene` 不带 `--profile` 时默认执行已有场景图的
+> 位置求解、干预式稳定化与双时间步验收；要求显式有限支撑图。显式 `--profile`
+> 保留单次自由回放诊断方式。多支撑、堆叠、恢复及本轮真实证据见
+> [场景图物理流程](POSITION_SOLVER.md)。下文历史导入示例不代表满足新支撑图契约。
+
 # SimFoundry 场景图接入 Genesis
 
 `import_simfoundry_scene.py` 把已有重建场景与已转换的标准 URDF 库组合成
@@ -161,3 +166,27 @@ OMP_NUM_THREADS=2 .venv/bin/python -m self_improving.sim_adapters.genesis.valida
 
 验证：仓库 363 passed；转换与物理专项 33 passed，包含悬空/无接触/间歇支撑、
 初态穿透、固定物体、位姿/速度失配与不完整轨迹攻击测试。
+
+## 上游“物理稳定化”与动态验收的区别
+
+当前固定版 `12_stabilize_physics.py` 使用 PyBullet，加载 plane.urdf、重力
+-9.81 m/s²，将物体按重建姿态上移 5 cm 后沉降。实际鼠标 s12 的配置为
+load_at_once=true；每个仿真步后将全部对象线速度、角速度清零，再比较相邻步
+位姿变化，阈值为 1e-4 m 和 1e-3 rad。最多 10000 步退出，但达到上限
+不会单独判为失败；尾部再执行 50 步反复清零速度并保存 pb_scene_poses.json，
+正常执行到尾部即 StageResult(success=True)。load_at_once=false 的另一分支
+逐个沉降并暂用固定约束，最后移除约束；本次鼠标没有使用该分支。
+
+这使用真实碰撞求解来整理初态，但没有本项目的连续自由动态速度窗口、
+声明目标接触比例、有限桌面覆盖及全程穿透数值门控，不能据 s12.success
+宣称这些门控通过。第 14 阶段转入 OmniGibson 后还会仿真沉降（默认
+settle_steps=100），保存场景；当前脚本同样没有上述通过/失败指标检查。
+因此上游 s12/s14 执行成功和下游 Genesis 动态验收失败并不矛盾。
+
+
+## 统一媒体入口的默认支撑模式（2026-09-08）
+
+`reconstruct_media` 现默认沿用本页的原始场景导入：`--support-mode upstream`。
+支持 `--reconstruction-scene` 直接导入已有结果，不调用模型和资产检索。
+原始平面转为 Genesis Plane，保留可见性、位姿和启用状态；
+预览输出在 02，03/04 不运行。`--support-mode retrieved` 保留原有限桌面流程。

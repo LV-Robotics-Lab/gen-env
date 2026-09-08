@@ -105,6 +105,25 @@ def test_k_boundary(setup, k):
     assert read(setup, "retrieval_result.json")["actual_k"] == min(k, 4)
 
 
+@pytest.mark.parametrize("model", ["gpt-4o", "openai/gpt-4o"])
+def test_supported_model_names_reach_selection(setup, model):
+    result = run(setup, vlm_config=replace(setup.config, model=model))
+    assert result["status"] == "selected" and result["vlm_calls"] == 1
+    assert result["vlm_config"]["model"] == model
+
+
+@pytest.mark.parametrize("model,api_mode", [
+    ("other/gpt-4o", "chat"),
+    ("gpt-4o-mini", "chat"),
+    ("openai/gpt-4o", "responses"),
+])
+def test_unsupported_model_configuration_stops_before_request(setup, model, api_mode):
+    result = run(setup, vlm_config=replace(setup.config, model=model, api_mode=api_mode))
+    assert result["error"] == "expected_gpt_4o_chat_configuration"
+    assert result["status"] == "error" and result["vlm_calls"] == 0
+    assert setup.calls == []
+
+
 def test_nonfirst_binding_differences_and_neutral_images(setup):
     result = run(setup)
     assert result["status"] == "selected" and result["vlm_calls"] == 1
@@ -273,7 +292,8 @@ def test_provider_secret_echo_is_redacted(setup):
     assert setup.config.api_key not in (setup.root / "run/vlm_selection.json").read_text()
 
 
-def test_http_payload_no_retries_and_timeout(setup, monkeypatch):
+@pytest.mark.parametrize("model", ["gpt-4o", "openai/gpt-4o"])
+def test_http_payload_no_retries_and_timeout(setup, monkeypatch, model):
     captured = []
 
     class Opener:
@@ -283,17 +303,32 @@ def test_http_payload_no_retries_and_timeout(setup, monkeypatch):
 
     import urllib.request
     monkeypatch.setattr(urllib.request, "build_opener", lambda *_: Opener())
-    config = replace(setup.config, timeout_s=60)
+    config = replace(setup.config, timeout_s=60, model=model)
     with pytest.raises(SelectionError, match="vlm_timeout"):
         ChatVisionClient(config)([{"role": "user", "content": []}])
     assert len(captured) == 1 and captured[0][1] == 60
     payload = json.loads(captured[0][0].data)
-    assert payload["model"] == "gpt-4o" and payload["response_format"] == {"type": "json_object"}
+    assert payload["model"] == model and payload["response_format"] == {"type": "json_object"}
     assert captured[0][0].full_url.endswith("/v1/chat/completions")
 
 
 def test_strict_validation_differences():
     assert validate_selection(response(), {1, 2, 3})["visible_differences"] == ["未确认米老鼠印花"]
+
+
+def test_markdown_fenced_selection_is_still_read():
+    """Models wrap the object in a code fence despite the prompt; the choice is still valid.
+
+    Field validation is unchanged: only a complete fence is unwrapped.
+    """
+    from self_improving.sim_adapters.genesis.vision_request import SelectionError, strict_json
+
+    assert (validate_selection('```json\n'+response()+'\n```', {1, 2, 3})
+            == validate_selection(response(), {1, 2, 3}))
+    assert strict_json('```\n{"a": 1}\n```') == {"a": 1}
+    for broken in ('```json\n{oops}\n```', '```json\n{"a":1}', '{"a":1}\n```', 'not json'):
+        with pytest.raises(SelectionError, match='invalid_json'):
+            strict_json(broken)
 
 
 def test_only_preview_passed_assets_enter_index(tmp_path):

@@ -1,5 +1,7 @@
 # Gen-Env: Genesis Scene Generation and Asset Reuse
 
+已有场景图可通过现有物理入口执行位置求解、干预式稳定化和双时间步自由验收，支持多固定支撑、堆叠及方位关系。入口、恢复与真实验收见 [场景图物理流程](self_improving/sim_adapters/genesis/POSITION_SOLVER.md)。
+
 Build Genesis scenes from natural-language requests, reuse native and reconstructed
 assets, and record explicit physics and rendering results. The current workflow
 lives in `self_improving/sim_adapters/genesis/`; SimFoundry provides a separate
@@ -112,6 +114,11 @@ your service. The VLM selection service must support image inputs. Keep
 `configs/llm.yaml` local; it is ignored by Git. SimFoundry uses its own separate
 model and credential setup.
 
+Any OpenAI-compatible service works without code changes; the example file ships
+`openai`, `moonshot`, and `openrouter` profiles. Switch by setting `active_profile`.
+On OpenRouter the model id is namespaced by vendor, so gpt-4o is `openai/gpt-4o`
+rather than `gpt-4o`.
+
 The text-to-scene example below expects the prepared index
 `assets/genesis/clip_non_robot_v1/index.json` and its referenced asset files.
 Follow the [asset preparation and CLIP instructions](self_improving/sim_adapters/genesis/README.md)
@@ -205,16 +212,53 @@ python -m self_improving.sim_adapters.genesis.reconstruct_media \
 For video, replace `--image /absolute/path/to/image.jpg` with
 `--video /absolute/path/to/video.mp4` and use a new task name. Supply exactly one
 input mode. Model-backed reconstruction and selection send images to the
-configured services. `--resume` requires matching input bytes, mode, task name,
-and effective configuration.
+configured services. `--resume` requires matching input bytes, mode and task name. Changed model/code configuration
+archives previous stage outputs and invalidates downstream work. Completed stage outputs are
+hash-checked before reuse; different media requires a new task name.
 
-It preserves SimFoundry foreground poses, retrieves a finite Genesis desk/table/counter
-asset, creates fixed collidable `support_0`, and runs contact-bound physical validation.
-No final render is produced unless physics passes. Image depth and hidden geometry are
-explicit inference, not measurement. The pipeline permits a baseline plus at
-most three repair attempts. Exit codes are 0 for physics and rendering success,
-1 for execution/input errors, 2 for physical failure, and 3 for stable results
-whose declared relations remain unverified.
+The media entry uses the native Gemini API at `https://api2.aigcbest.top`, with
+`gemini-2.5-flash` for text/vision and the pinned upstream `gemini-3-pro-image` for
+image editing. `--vlm-config` supplies the existing private credential; this media
+route does not use that file's Chat Completions model. Text, vision and decodable
+image output are probed before reconstruction. See the [native service guide](self_improving/sim_adapters/simfoundry/README.md#native-media-service).
+
+By default (`--support-mode upstream`), it preserves SimFoundry foreground poses and
+source ground-plane enablement, visibility and transform. It does not retrieve a table or
+add `support_0`: the surface the scene rests on stays the analytic environment plane.
+
+That plane is now a valid fixed root, so this mode runs physics and, on success, the final
+render. Physics is a free replay of the imported poses -- nothing is re-solved, settled or
+repaired, because the source placement is the claim under test. A body whose measured lowest
+vertex sits on the plane gets a support relation derived from that measurement; a body
+floating clear of it gets none and the scene is reported `physics_status: not_run` with the
+reason, never as a pass. Exit 0 means physics and final rendering passed.
+
+Because the plane has no geometry, a render of it shows Genesis' default checkerboard. When
+the reconstruction supplies a support observation, a render-only surface is built from the
+observed extent and drawn in its place. It carries `collision=False` and its top face is
+pinned to the plane physics used, re-measured from the written mesh by `verify()`; a scene
+whose surface cannot be observed simply renders against the bare plane. The drawn edges are
+where the image stopped, not where the desk stops -- `visual_support.json` records which
+sides were censored.
+
+This importer does not reproduce backgrounds or robots. Image depth and hidden geometry
+remain inference, not measurement.
+
+Use `--support-mode retrieved --clip-index <index.json>` explicitly to opt into the
+previous finite-support selection and physics workflow. In that mode exit 0 means physics
+and final rendering passed; failure codes remain 1 (execution), 2 (physics), 3 (incomplete).
+
+To inspect an existing reconstruction without running models again:
+
+```bash
+venv/genesis/bin/python -m self_improving.sim_adapters.genesis.reconstruct_media \
+  --reconstruction-scene /path/to/simfoundry/reconstruction \
+  --name '按SimFoundry原始支撑面转换重建场景' --output-root output
+```
+
+This keeps source JSON snapshots under `01_obj/source_outputs`, converted URDF assets
+under `01_obj/foreground_assets`, and the portable Genesis package under `02_scene`.
+No model configuration or CLIP index is needed for this existing-scene command.
 
 **Recorded local status:** the mouse image completed stages 1b–4; the video
 decoded 124 distinct frames and sampled 15. GPU contention blocked later work,
@@ -324,6 +368,42 @@ checks and two failing: pear penetration and teal plate angular speed.
 Sequential video and final diagnostic views are available; declared support
 relationship acceptance remains unverified.
 
+## Why A Physics Check Failed, And What May Be Retuned
+
+An acceptance report that only lists failed criteria cannot be acted on, because two
+unrelated things produce one. `physics_criteria.py` labels every criterion with which:
+
+- `scene_truth` -- drift, excursion, rotation rate, support fraction, tipping. A failure
+  means the body really moved. Retuning the solver would hide it, so nothing may be retuned.
+- `numerics_coupled` -- penetration and contact dropout. These are set by the contact solve
+  as much as by the scene, so a different numerical configuration is a fair next step.
+
+The split is measured, not asserted. Sweeping `constraint_timeconst` across its legal range
+on one unchanged resting scene moved resting penetration 0.034 mm -> 0.697 mm (a factor of
+20, from a knob the scene never saw) while `drift_rate` moved 1.6x and stayed three orders
+of magnitude inside its limit. Reports also carry `penetration_budget_used`: at the shipped
+stiffness a resting body already spends about 70% of the 1 mm budget, so a scene can pass
+with little margin and say so.
+
+`physics_repair_agent.py` searches for a workable configuration when -- and only when --
+every failure is `numerics_coupled`:
+
+```bash
+venv/genesis/bin/python -m self_improving.sim_adapters.genesis.physics_repair_agent \
+  --package <scene>/assets/<id>/asset.json --output-dir data/agent_repair/trial_01 \
+  --at-rest --budget 4
+```
+
+Pass `--scene-package` instead to drive the imported-scene entrance. The model proposes; it
+never decides. Its reply is validated deterministically -- key allowlist, the registry's
+characterised `dt` range, the `2*dt` stability floor, `satisfiable()`, and a no-repeat rule
+-- before any physics runs, and acceptance thresholds appear nowhere in the schema it
+answers in, so no reply can move the bar it is measured against. Refused proposals are
+recorded with their reason. A configuration the search invents rather than one from the
+registry is marked `agent_proposed`, and `verify_evidence` refuses it as an asset's
+qualifying evidence even when its trajectory passed. Budget exhaustion reports `exhausted`,
+never a pass.
+
 ## Local Output Organization
 
 `output/` contains task folders named from the input. Shared Genesis assets and indexes live in
@@ -367,3 +447,8 @@ submodules. Source provenance and retained-artifact policies are recorded in
 
 This repository is licensed under Apache-2.0. See [LICENSE](LICENSE) and
 [NOTICE](NOTICE) for licensing and attribution.
+
+最新 SimFoundry 媒体验收：复用 `native_003` 重建的 `鼠标_物理_native003_002`
+已完成真实 Genesis 基线与半时间步验证；接触和穿透通过，速度与角速度
+超限，结论为 `physics_failed`，最终展示未生成。详见
+[当前验收证据](self_improving/sim_adapters/genesis/MEDIA_RECONSTRUCTION_EVIDENCE.md)。

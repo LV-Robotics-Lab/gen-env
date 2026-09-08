@@ -7,6 +7,7 @@ This adapter deliberately lives outside OpenXSim. No rendering occurs during phy
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import os
@@ -26,24 +27,42 @@ from agenticsim.openxsim.backends import CompileResult, GenesisCompiler
 from agenticsim.openxsim.importers import import_compile_manifest
 from agenticsim.openxsim.ir import Pose
 
-from self_improving.sim_adapters.genesis.physics_math import angle, corners, rotation
+from self_improving.sim_adapters.genesis.physics_math import (
+    angle,
+    corners,
+    effective_speed,
+    free_fall_step,
+    longest_run,
+    rotation,
+    stiffness_floor,
+    sweep_radius,
+)
 from self_improving.sim_adapters.genesis.task_output import TaskOutput
 
 GENESIS_COMMIT = "0e74bf392781884ccad765c3f344419c86b872ca"
-SCHEMA = "genenv.genesis_physics_evidence.v1"
+SCHEMA = "genenv.genesis_physics_evidence.v2"
 DEFAULTS = dict(
     dt=0.004,
     steps=1000,
     substeps=1,
     seed=0,
     window_s=0.5,
+    # Pose evolution is the primary rest criterion here too, so a body that holds still
+    # by luck for one sample cannot pass on an instantaneous reading.
     translation_m=0.001,
     rotation_deg=0.5,
-    speed_mps=0.01,
-    angular_speed_radps=0.05,
+    drift_rate_mps=0.002,
+    excursion_m=0.001,
+    rotation_rate_dps=1.0,
+    # Auxiliary: sweep-radius-weighted speed, held over consecutive samples. The limit is
+    # derived per configuration in settings_for(), always above that step's g*dt.
+    speed_floor_multiple=1.5,
+    speed_run_steps=5,
+    contact_dropout_max=0.05,
     support_fraction=0.8,
     penetration_m=0.001,
-    constraint_timeconst=0.001,
+    # Twice dt or more; Genesis silently clamps anything stiffer and the solve destabilises.
+    constraint_timeconst=0.05,
 )
 
 
@@ -52,6 +71,35 @@ def write_json(path, value):
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
     temporary.replace(path)
+
+
+def satisfiable(cfg):
+    """Reject limits no resting body can meet, before any scene is blamed for missing them.
+
+    A resting body under contact loses its contact set for single steps and reads exactly
+    one free-fall step of speed, so a limit at or below g*dt is unsatisfiable by
+    construction; a constraint_timeconst below 2*dt is silently clamped by Genesis to that
+    floor, which is the stiffest and least stable setting the step allows.
+    """
+    floor = free_fall_step(dict(cfg, gravity=[0.0, 0.0, -9.81]))
+    cfg = dict(cfg, effective_speed_mps=round(cfg["speed_floor_multiple"] * floor, 6))
+    if cfg["effective_speed_mps"] <= floor:
+        raise ValueError(
+            f"speed limit {cfg['effective_speed_mps']} m/s is unsatisfiable: one free-fall "
+            f"step at dt={cfg['dt']} is {floor:.5f} m/s"
+        )
+    if cfg["speed_run_steps"] < 2:
+        raise ValueError("speed criterion must span consecutive steps, not a single sample")
+    if cfg["drift_rate_mps"] * cfg["window_s"] < cfg["dt"] * floor:
+        raise ValueError("drift rate limit is below one free-fall step of travel")
+    if not 0.0 <= cfg["contact_dropout_max"] < 1.0:
+        raise ValueError("contact dropout limit must be a fraction below one")
+    if cfg["constraint_timeconst"] < stiffness_floor(cfg):
+        raise ValueError(
+            f"constraint_timeconst {cfg['constraint_timeconst']} s sits below the Genesis "
+            f"stability floor 2*dt = {stiffness_floor(cfg)} s and would be silently clamped"
+        )
+    return cfg
 
 
 def config_for(package, scene):
@@ -76,6 +124,7 @@ def config_for(package, scene):
         raise ValueError("v1 requires substeps=1 and a full terminal window")
     if cfg["support_fraction"] > 1:
         raise ValueError("invalid support fraction")
+    cfg = satisfiable(cfg)
     ids = {o.instance_id for o in package.env.objects}
     if set(raw["bodies"]) != ids or "table" in ids:
         raise ValueError("body settings must match every object; table is reserved")
@@ -147,7 +196,7 @@ def config_for(package, scene):
         raise ValueError("every dynamic object must have a support/inside condition")
     if not support:
         raise ValueError("at least one dynamic test object is required")
-    return raw
+    return dict(raw, settings=cfg)
 
 
 def evaluate(package, scene, rows):
@@ -202,18 +251,46 @@ def evaluate(package, scene, rows):
             np.linalg.norm(np.array(s["position"]) - final[name]["position"]) for s in states
         )
         degrees = max(angle(s["orientation_wxyz"], final[name]["orientation_wxyz"]) for s in states)
-        speed = max(np.linalg.norm(s["velocity"]) for s in states)
-        angular = max(np.linalg.norm(s["angular_velocity"]) for s in states)
+        track = np.array([s["position"] for s in states], dtype=float)
+        drift_rate = float(np.linalg.norm(track[-1] - track[0])) / cfg["window_s"]
+        excursion = float(np.linalg.norm(track - track.mean(0), axis=1).max())
+        rotation_rate = (
+            angle(states[-1]["orientation_wxyz"], states[0]["orientation_wxyz"]) / cfg["window_s"]
+        )
+        # The lever arm comes from the declared local bounds, which corners() has already
+        # checked against the compiled pose, so the spin tolerance is tied to real geometry.
+        bounds = np.asarray(bodies[name]["local_bounds"], dtype=float)
+        radius = sweep_radius(np.array(list(itertools.product(*zip(bounds[0], bounds[1])))))
+        effective = [effective_speed(s, radius) for s in states]
+        run = longest_run(v >= cfg["effective_speed_mps"] for v in effective)
+        touching = [
+            any(name in (c["a"], c["b"]) for c in r["contacts"]) for r in window
+        ]
+        dropout = sum(not t for t in touching) / len(window)
         check(
             f"{name}.settled",
             distance <= cfg["translation_m"]
             and degrees <= cfg["rotation_deg"]
-            and speed <= cfg["speed_mps"]
-            and angular <= cfg["angular_speed_radps"],
+            and drift_rate <= cfg["drift_rate_mps"]
+            and excursion <= cfg["excursion_m"]
+            and rotation_rate <= cfg["rotation_rate_dps"]
+            and run < cfg["speed_run_steps"],
             displacement_m=float(distance),
             rotation_deg=degrees,
-            speed_mps=float(speed),
-            angular_speed_radps=float(angular),
+            drift_rate_mps=drift_rate,
+            excursion_m=excursion,
+            rotation_rate_dps=rotation_rate,
+            effective_speed_max_mps=max(effective),
+            effective_speed_limit_mps=cfg["effective_speed_mps"],
+            overspeed_run_steps=run,
+            overspeed_run_limit=cfg["speed_run_steps"],
+            sweep_radius_m=radius,
+        )
+        check(
+            f"{name}.contact_continuity",
+            dropout <= cfg["contact_dropout_max"],
+            dropout_fraction=dropout,
+            limit=cfg["contact_dropout_max"],
         )
     table = scene["table"]
     for condition in package.task.success:
@@ -231,26 +308,31 @@ def evaluate(package, scene, rows):
             check(f"{name}.upright", tilt <= condition["max_tilt_deg"], tilt_deg=tilt)
             continue
         target = condition["target"]
-        hits, unexpected = 0, set()
+        hits, samples, unexpected = 0, 0, set()
         for row in window:
-            force = 0.0
+            force, in_contact = 0.0, False
             for c in row["contacts"]:
                 if name not in (c["a"], c["b"]):
                     continue
+                in_contact = True
                 other = c["b"] if c["a"] == name else c["a"]
                 f = c["force_a"] if c["a"] == name else c["force_b"]
                 if other == target:
                     force += f[2]
                 elif other != name:
                     unexpected.add(other)
-            hits += force > 1e-6
-        fraction = hits / len(window)
+            hits += in_contact and force > 1e-6
+            samples += in_contact
+        # Denominator is the touching samples: dropout is charged once, above.
+        fraction = hits / samples if samples else 0.0
         check(
             f"{name}.support",
-            fraction >= cfg["support_fraction"],
+            samples > 0 and fraction >= cfg["support_fraction"],
             target=target,
             fraction=fraction,
             limit=cfg["support_fraction"],
+            touching_samples=samples,
+            window_samples=len(window),
         )
         check(f"{name}.unexpected_support", not unexpected, targets=sorted(unexpected))
         if kind == "inside":

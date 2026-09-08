@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import ipaddress
 import json
 import math
 import os
@@ -140,6 +141,24 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _is_unroutable_host(hostname: str | None) -> bool:
+    """True for hosts the public internet cannot reach, where plaintext HTTP is allowed.
+
+    The bearer token is sent in a header, so the endpoint must be HTTPS whenever it leaves
+    this network. It need not be for a destination that is not globally routable: loopback,
+    RFC 1918, link-local, or the 100.64/10 shared range a WireGuard/Tailscale peer sits in,
+    which carries its own transport encryption. Only literal addresses and `localhost`
+    qualify -- any other name is rejected because DNS is not authenticated and could point
+    a plaintext request with a live credential at an arbitrary host.
+    """
+    if hostname == "localhost":
+        return True
+    try:
+        return not ipaddress.ip_address(hostname or "").is_global
+    except ValueError:
+        return False
+
+
 @dataclass(frozen=True)
 class LLMProviderConfig:
     """Resolved provider settings; the API key is excluded from repr and digests."""
@@ -242,14 +261,11 @@ class LLMProviderConfig:
                 stage="configuration",
                 failure_kind="invalid_configuration",
             ) from exc
-        is_loopback_http = parsed_endpoint.scheme == "http" and hostname in {
-            "localhost",
-            "127.0.0.1",
-            "::1",
-        }
-        if parsed_endpoint.scheme != "https" and not is_loopback_http:
+        is_plaintext_ok = parsed_endpoint.scheme == "http" and _is_unroutable_host(hostname)
+        if parsed_endpoint.scheme != "https" and not is_plaintext_ok:
             raise LLMProviderError(
-                "LLM endpoint must use HTTPS; HTTP is allowed only for a literal loopback host",
+                "LLM endpoint must use HTTPS; HTTP is allowed only for a loopback or "
+                "non-routable host",
                 stage="configuration",
                 failure_kind="invalid_configuration",
             )

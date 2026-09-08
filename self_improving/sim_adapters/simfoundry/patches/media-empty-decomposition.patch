@@ -1,0 +1,18 @@
+diff --git a/scripts/pipeline/A_reconstruction/stages/5_decompose_scene.py b/scripts/pipeline/A_reconstruction/stages/5_decompose_scene.py
+index 2bc5167..5eb0a27 100644
+--- a/scripts/pipeline/A_reconstruction/stages/5_decompose_scene.py
++++ b/scripts/pipeline/A_reconstruction/stages/5_decompose_scene.py
+@@ -2040,6 +2040,13 @@ def main(cfg):
+         last_kept_iteration = current_iteration
+         current_iteration += 1
+ 
++    # An empty decomposition is not a reconstructed scene. In particular, a
++    # depth-inconsistent source image can prune every otherwise valid mask.
++    if not list(Path(out_dir).glob("masked_object/*.png")):
++        finalize_stage(stage_cfg=cfg.s5_scene, out_dir=out_dir,
++                       result=StageResult(success=False))
++        raise RuntimeError("No foreground objects survived scene decomposition")
++
+     # Done!
+     logger.info(f"\n{'*' * 30}\nCompleted scene decomposition!\n{'*' * 30}\n")
+ 

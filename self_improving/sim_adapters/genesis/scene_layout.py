@@ -10,6 +10,10 @@ from self_improving.sim_adapters.genesis import clip_select as clip
 SCHEMA = 'genenv.asset_scene.v2'
 VERSION = 'genenv.visual_layout.v1'
 GAP, MARGIN, NEAR, FAR = .06, .02, .18, .30
+# MARGIN is the acceptance red line. Planning aims further in, so that normal settling
+# drift cannot carry a legally placed object back across it.
+SETTLING_SLACK = .015
+PLANNING_MARGIN = MARGIN+SETTLING_SLACK
 LATERAL = {'left_of', 'right_of', 'in_front_of', 'behind', 'near', 'far_from'}
 REGIONS = {'center', 'left', 'right', 'front', 'back'}
 
@@ -41,17 +45,30 @@ def _acyclic(ids, edges, label):
         visit(name)
 
 
+# Reserved id for the Genesis built-in plane. It is a legitimate fixed root -- a body on
+# the floor is an ordinary scene -- but it is analytic rather than a mesh, so the surface
+# checks that re-measure an asset's top face do not apply to it.
+GROUND = 'ground'
+
+
 def relations(document):
     ids = [o['object_id'] for o in document['objects']]
     if not 1 <= len(ids) <= 12 or len(ids) != len(set(ids)):
         raise ValueError('invalid or duplicate asset object ID')
+    if GROUND in ids:
+        raise ValueError(f'{GROUND!r} is reserved for the environment plane')
     parents, seen, axes, distances = {}, set(), [[], []], {}
     rows = document['relations']
     if not isinstance(rows, list) or len(rows) > 64:
         raise ValueError('invalid relation list')
     for row in rows:
         kind, a, b = row['relation'], row['source'], row['target']
-        if a not in ids or b not in ids or a == b:
+        # The environment plane may be named as what a body rests on, and only that: it is
+        # not an object, so it has no extent to be left of and nothing can rest under it.
+        # Whether the scene actually has a plane is checked where the layout is known.
+        if b == GROUND and kind == 'on' and a in ids:
+            pass
+        elif a not in ids or b not in ids or a == b:
             raise ValueError('invalid relation object reference')
         if kind not in LATERAL | {'on'}:
             raise UnsupportedScene(f'unsupported relation: {kind}; inside is deferred')
@@ -75,7 +92,7 @@ def relations(document):
             if pair in distances and distances[pair] != kind:
                 raise ValueError('contradictory near/far constraints')
             distances[pair] = kind
-    _acyclic(ids, list(parents.items()), 'support')
+    _acyclic([*ids, GROUND], list(parents.items()), 'support')
     for edges in axes:
         _acyclic(ids, edges, 'direction')
     return parents
@@ -200,7 +217,8 @@ def solve(document, bindings, geometry, graph, seed=42):
             target = parents[n]
             surface = geometry[target]['surface']
             polygon = np.asarray(surface['polygon_xy_m'])+poses[target][:2]
-            low, high = polygon.min(axis=0)+half+MARGIN, polygon.max(axis=0)-half-MARGIN
+            low = polygon.min(axis=0)+half+PLANNING_MARGIN
+            high = polygon.max(axis=0)-half-PLANNING_MARGIN
             z = poses[target][2]+surface['z_m']-box[0, 2]
         else:
             low, high = np.full(2, -extent/2), np.full(2, extent/2)
@@ -283,7 +301,7 @@ def solve(document, bindings, geometry, graph, seed=42):
     for target in set(parents.values()):
         surfaces[target] = dict(geometry[target]['surface'],
                                 world_z_m=poses[target][2]+geometry[target]['surface']['z_m'],
-                                child_placements=[dict(object_id=n, margin_m=MARGIN,
+                                child_placements=[dict(object_id=n, margin_m=PLANNING_MARGIN,
                                 footprint_target_xy_m=rectangle(world[n]-poses[target]).tolist(),
                                 coverage='passed') for n in ids if parents.get(n) == target])
     layout = dict(schema_version=SCHEMA, scene_graph_sha256=clip.digest(graph),

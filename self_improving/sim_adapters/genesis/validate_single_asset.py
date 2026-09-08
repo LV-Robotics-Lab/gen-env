@@ -1,4 +1,12 @@
-"""Native single-asset drop validation; no settling, repair, retrieval or VLM calls."""
+"""Native single-asset drop validation; no settling, repair, retrieval or VLM calls.
+
+The default release is a 10 mm drop. `at_rest=True` instead releases the body already
+touching the plane, for a scene whose pose was authored at rest: the drop's landing impact
+is then not part of the trajectory the penetration limit is applied to. Acceptance itself
+is unchanged -- penetration stays checked on every frame -- so this only removes an impact
+the authored scene never has. Such a run is not a drop test, and verify_evidence refuses it
+as downstream evidence.
+"""
 
 from __future__ import annotations
 
@@ -19,15 +27,25 @@ if __package__ in (None, ""):
 
 from self_improving.sim_adapters.genesis import asset_physics
 from self_improving.sim_adapters.genesis import build_official_index as official
+from self_improving.sim_adapters.genesis import physics_criteria as criteria
 from self_improving.sim_adapters.genesis import standard_urdf as standard
-from self_improving.sim_adapters.genesis.physics_math import angle
+from self_improving.sim_adapters.genesis.physics_math import (
+    angle,
+    effective_speed,
+    longest_run,
+    sweep_radius,
+)
 from self_improving.sim_adapters.genesis.storage_paths import local_path
 from self_improving.sim_adapters.genesis.validate_asset_scene import contacts
 
 array = standard.array
 
+# Release height of the drop test, measured from the lowest loaded collision vertex.
+DROP_CLEARANCE_M = 0.01
 
-def evaluate(rows, cfg):
+
+def evaluate(rows, cfg, radius):
+    """Same three-layer criteria as the scene entrance, for one body on the ground plane."""
     if len(rows) != cfg["steps"] + 1:
         raise ValueError("incomplete trajectory")
     for i, row in enumerate(rows):
@@ -37,29 +55,60 @@ def evaluate(rows, cfg):
             if not np.isfinite(row[k]).all():
                 raise ValueError("nonfinite state")
         angle(row["orientation_wxyz"], row["orientation_wxyz"])
+    if not np.isfinite(radius) or radius <= 0:
+        raise ValueError("invalid frozen sweep radius")
     window = rows[-round(cfg["window_s"] / cfg["dt"]) :]
     positions = np.array([r["position"] for r in window])
+    effective = [effective_speed(r, radius) for r in window]
+    touching = [bool(r["contacts"]) for r in window]
+    supported = sum(
+        t and r["ground_up_force_n"] > cfg["support_force_n"] for r, t in zip(window, touching)
+    )
     measures = dict(
         translation_m=float(np.linalg.norm(positions - positions[0], axis=1).max()),
         rotation_deg=max(
             angle(r["orientation_wxyz"], window[0]["orientation_wxyz"]) for r in window
         ),
-        speed_mps=max(float(np.linalg.norm(r["velocity"])) for r in window),
-        angular_speed_radps=max(float(np.linalg.norm(r["angular_velocity"])) for r in window),
+        drift_rate_mps=float(np.linalg.norm(positions[-1] - positions[0])) / cfg["window_s"],
+        excursion_m=float(np.linalg.norm(positions - positions.mean(0), axis=1).max()),
+        rotation_rate_dps=angle(window[-1]["orientation_wxyz"], window[0]["orientation_wxyz"])
+        / cfg["window_s"],
         penetration_m=max([c["penetration"] for r in rows for c in r["contacts"]] + [0]),
-        support_fraction=sum(r["ground_up_force_n"] > cfg["support_force_n"] for r in window)
-        / len(window),
+        contact_dropout_max=sum(not t for t in touching) / len(window),
+        # Consecutive samples over the effective-speed limit, never one sample's maximum:
+        # an isolated spike is the dropout artefact this trace also counts on its own.
+        speed_run_steps=longest_run(v >= cfg["effective_speed_mps"] for v in effective),
+        # Support is asked only of the samples where the body is touching anything.
+        support_fraction=supported / sum(touching) if any(touching) else 0.0,
     )
+    at_least, below = {"support_fraction"}, {"speed_run_steps"}
     checks = [
         dict(
             name=k,
             observed=v,
             limit=cfg[k],
-            passed=bool(v >= cfg[k] if k == "support_fraction" else v <= cfg[k]),
+            passed=bool(
+                v >= cfg[k] if k in at_least else v < cfg[k] if k in below else v <= cfg[k]
+            ),
         )
         for k, v in measures.items()
     ]
-    return checks
+    checks.append(
+        dict(
+            name="effective_speed_max_mps",
+            observed=max(effective),
+            limit=cfg["effective_speed_mps"],
+            passed=True,
+            diagnostic=True,
+        )
+    )
+    # Resting penetration, not the whole-run maximum: the maximum carries the approach
+    # transient, while this is what the solver spends merely holding the body up.
+    resting = max([c["penetration"] for r in window for c in r["contacts"]] + [0.0])
+    checks, budget = criteria.annotate(
+        checks, window_penetration_m=resting, penetration_limit_m=cfg["penetration_m"]
+    )
+    return checks, budget
 
 
 def resolve(package=None, binding=None):
@@ -114,7 +163,7 @@ def resolve(package=None, binding=None):
     return source, binding, physics, verify
 
 
-def run(output_dir, *, package=None, binding=None):
+def run(output_dir, *, package=None, binding=None, at_rest=False, numerics=None):
     out = Path(output_dir).resolve()
     from self_improving.sim_adapters.genesis.clip_select import writable_storage
 
@@ -129,12 +178,20 @@ def run(output_dir, *, package=None, binding=None):
         simulation_executed=False,
         model_calls=0,
         scope="single rigid asset drop only; no scene support/containment acceptance",
+        release_mode="at_rest" if at_rest else "drop",
+        numerics_profile=(numerics or {}).get("numerics_profile", "asset_physics_baseline"),
+        numerics_origin=(numerics or {}).get("numerics_origin", "default"),
     )
+    if at_rest:
+        result["scope"] = (
+            "single rigid body released already touching the plane; not a drop test and "
+            "not valid as downstream asset evidence"
+        )
     initialized = False
     video = None
     sampled_hashes = []
     rows = []
-    cfg = asset_physics.settings("baseline")
+    cfg = asset_physics.settings("baseline", numerics)
     verify = None
     try:
         source, bound, physics, verify = resolve(package, binding)
@@ -147,7 +204,11 @@ def run(output_dir, *, package=None, binding=None):
         frozen = dict(
             binding=bound,
             settings=cfg,
-            clearance_m=0.01,
+            # Frozen into the digest, so a run's release height cannot be revised afterwards.
+            clearance_m=0.0 if at_rest else DROP_CLEARANCE_M,
+            numerics_profile=result["numerics_profile"],
+            numerics_origin=result["numerics_origin"],
+            numerics_digest=(numerics or {}).get("numerics_digest"),
             friction=physics,
             genesis_commit=official.GENESIS_COMMIT,
         )
@@ -244,9 +305,14 @@ def run(output_dir, *, package=None, binding=None):
         official.write_json(out / "loaded_asset.json", loaded)
         points = array(entity.get_verts()).reshape(-1, 3)
         pos = array(entity.get_pos()).reshape(3)
-        translation = np.array([0, 0, 0.01 - points[:, 2].min()])
+        # Measured from the loaded collision geometry, never declared: the sweep radius
+        # is what turns the body's spin into the one linear speed the criteria compare.
+        radius = sweep_radius(points - pos)
+        clearance = 0.0 if at_rest else DROP_CLEARANCE_M
+        translation = np.array([0, 0, clearance - points[:, 2].min()])
         entity.set_pos(pos + translation)
         result["test_translation_m"] = translation.tolist()
+        result["sweep_radius_m"] = radius
         visual = np.concatenate(
             [array(g.get_vverts()).reshape(-1, 3) for link in entity.links for g in link.vgeoms]
         )
@@ -303,13 +369,18 @@ def run(output_dir, *, package=None, binding=None):
         durable = [json.loads(s) for s in (out / "trace.jsonl").read_text().splitlines()]
         if rows != durable:
             raise ValueError("durable trajectory mismatch")
-        checks = evaluate(durable, cfg)
+        checks, budget = evaluate(durable, cfg, radius)
         passed = all(c["passed"] for c in checks)
+        failed = [c["name"] for c in checks if not c["passed"]]
         result.update(
             status="physics_passed" if passed else "physics_failed",
             physics_status="passed" if passed else "failed",
             exit_code=0 if passed else 2,
             checks=checks,
+            # What a caller needs to decide whether retuning is even legitimate.
+            failure_categories=criteria.classify(failed),
+            numerics_tunable=criteria.tunable(failed),
+            **budget,
         )
         dest = out / ("final_render" if passed else "diagnostics")
         dest.mkdir()
@@ -383,10 +454,21 @@ def verify_evidence(directory, binding):
     for key in ("model_entrypoint", "source_files", "source_root"):
         if frozen["binding"][key] != binding[key]:
             raise ValueError("physics evidence belongs to a different asset")
+    # Checked before the blanket settings comparison below, which would also reject these
+    # but only as "unexpected thresholds". Both cases are specific and worth naming: a
+    # configuration a search invented for this one asset is not the versioned test
+    # downstream asks for, even when the trajectory it produced passes.
+    if frozen.get("numerics_origin") not in (None, "default", "registered"):
+        raise ValueError("physics evidence used an agent-proposed numerical configuration")
+    # An at-rest release never lands, so its trajectory cannot show what the asset does on
+    # impact. Downstream selection asks for the drop test specifically; absent or altered
+    # clearance fails closed rather than passing an easier run off as that test.
+    if frozen.get("clearance_m") != DROP_CLEARANCE_M:
+        raise ValueError("physics evidence was not produced by the drop test")
     if frozen["settings"] != asset_physics.settings("baseline"):
         raise ValueError("unexpected single-asset physics thresholds")
     rows = [json.loads(line) for line in (path.parent / "trace.jsonl").read_text().splitlines()]
-    checks = evaluate(rows, frozen["settings"])
+    checks, _ = evaluate(rows, frozen["settings"], report["sweep_radius_m"])
     if checks != report["checks"] or not all(c["passed"] for c in checks):
         raise ValueError("trajectory does not establish physics success")
     return report
@@ -398,6 +480,12 @@ def main():
     inputs.add_argument("--package", type=Path)
     inputs.add_argument("--binding", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--at-rest",
+        action="store_true",
+        help="release the body already touching the plane instead of dropping it 10 mm; "
+        "for scenes authored at rest. Not a drop test and not downstream asset evidence.",
+    )
     args = vars(parser.parse_args())
     report = run(**args)
     print(json.dumps(report, ensure_ascii=False))

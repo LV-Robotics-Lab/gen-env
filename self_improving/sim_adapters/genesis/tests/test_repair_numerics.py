@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from test_text_repair import case
+from test_text_repair import case, moving, scattered
 
 from self_improving.sim_adapters.genesis import repair_numerics as numerics
 from self_improving.sim_adapters.genesis import repair_physics as physics
@@ -17,22 +17,32 @@ def test_legacy_input_and_settings_remain_exact():
     expected = dict(
         schema_version="genenv.text_repair_input.v1",
         profile=physics.geo.PROFILE,
-        settings=copy.deepcopy(physics.SETTINGS),
+        # The frozen input records the limits that were actually applied, which now
+        # includes the speed limit settings() derives from this profile's step size.
+        settings=copy.deepcopy(physics.settings()),
         assets=copy.deepcopy(data["assets"]),
         poses=copy.deepcopy(data["poses"]),
         relations=[],
         random_seed=0,
     )
     assert json.dumps(data) == json.dumps(expected)
-    assert physics.settings() == physics.SETTINGS
+    # settings() adds exactly one key: the speed limit derived from this profile's dt.
+    legacy = physics.settings()
+    assert {k: v for k, v in legacy.items() if k != "effective_speed_mps"} == physics.SETTINGS
     assert "diagnostics" not in physics.evaluate(data, rows)
     assert physics.frozen_input(data["assets"], data["poses"], [], 0,
                                 numerics_profile="legacy", repair_preset="legacy") == data
 
 
 def test_registered_candidates_and_half_dt_preserve_acceptance():
-    assert len(numerics.CANDIDATE_PROFILES) == 12
-    assert len(numerics.PROFILES) == 17
+    # Five step sizes x two authoring modes x three stiffness rungs. The candidates stay
+    # the three step sizes repair was characterised on: the 4 ms rungs exist for the
+    # entrances that run there and must not widen this search. The 50 ms rung is what puts
+    # a setting clear of the stability floor inside it, not only the stiff side.
+    assert len(numerics.CANDIDATE_PROFILES) == 18
+    assert all(0.0005 <= numerics.configuration(n)["dt"] <= 0.002
+               for n in numerics.CANDIDATE_PROFILES)
+    assert len(numerics.PROFILES) == 31
     order = []
     for name in numerics.CANDIDATE_PROFILES:
         cfg = physics.settings(numerics_profile=name)
@@ -45,6 +55,10 @@ def test_registered_candidates_and_half_dt_preserve_acceptance():
         assert cfg["penetration_m"] == 0.001
         assert cfg["penetration_relative"] == 0.01
         assert cfg["max_collision_pairs"] == 1024 and cfg["max_contacts"] == 4096
+        # Genesis clamps a stiffer request up to twice the step, so a profile below the
+        # floor would record a timeconst the solve never used.
+        assert cfg["constraint_timeconst"] >= 2 * cfg["dt"]
+        assert cfg["effective_speed_mps"] > abs(cfg["gravity"][2]) * cfg["dt"]
         assert half["dt"] == cfg["dt"] / 2 and half["steps"] == cfg["steps"] * 2
         assert half["contact_solref"] == cfg["contact_solref"]
         assert half["contact_solimp"] == cfg["contact_solimp"]
@@ -90,11 +104,11 @@ def test_new_numerics_keeps_95_percent_boundary(bad_count, passed, metric):
     data, rows = case()
     data = physics.frozen_input(data["assets"], data["poses"], [], 0,
                                 numerics_profile=numerics.CANDIDATE_PROFILES[0])
-    for row in rows[-bad_count:]:
+    for row in scattered(rows, bad_count):
         if metric == "support":
-            row["contacts"] = row["contacts"][1:]
+            row["contacts"][0].update(force_a=[0, 0, 0], force_b=[0, 0, 0])
         else:
-            row["objects"]["a"]["velocity"] = [.01, 0, 0]
+            row["objects"]["a"]["velocity"] = [moving(data), 0, 0]
     result = physics.evaluate(data, rows)
     assert result["passed"] is passed
     assert result == physics.evaluate(data, json.loads(json.dumps(rows)))
@@ -177,7 +191,7 @@ def test_diagnostics_separate_no_contact_from_no_upward_support():
     c = window[2]["contacts"][0]
     c.update(force_a=[0, 0, -1], force_b=[0, 0, 1])
     for row in window[1:3]:
-        row["objects"]["a"]["velocity"] = [.02, 0, 0]
+        row["objects"]["a"]["velocity"] = [moving(data), 0, 0]
     result = numerics.diagnostics(data, window)["objects"]["a"]
     assert result["window_samples"] == 5
     assert result["no_contact_samples"] == 2

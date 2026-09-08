@@ -105,8 +105,11 @@ def test_top_level_report_cannot_contradict_recomputed_verdict(trial, field, val
 
 
 def test_failed_trajectory_cannot_be_selected_by_forging_exit_zero(trial):
+    # Above the limit this trial's own settings derive from its step size, sustained long
+    # enough to be motion rather than a one-sample contact-detection artefact.
+    speed = 2*trial.data["settings"]["effective_speed_mps"]
     for row in trial.rows[-26:]:
-        row["objects"]["cup_1"]["velocity"] = [.02, 0, 0]
+        row["objects"]["cup_1"]["velocity"] = [speed, 0, 0]
     result = physics.evaluate(trial.data, trial.rows)
     assert not result["passed"]
     trial.report["result"] = result

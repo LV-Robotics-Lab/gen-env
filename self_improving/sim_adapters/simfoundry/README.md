@@ -165,3 +165,36 @@ Agent 应读取退出码、阶段 `stage_info.json`、`pipeline_run_report.json`
 指向已下载 snapshot。复制安装时应保留该链接和目标缓存，或让上游按需重新下载。
 
 当前安装与复现记录见 [REPRODUCTION.md](REPRODUCTION.md)。
+
+
+## Native media service
+
+统一媒体入口采用 Gemini 原生 `generateContent`，服务为
+`https://api2.aigcbest.top`，文字／识图固定 `gemini-2.5-flash`，图片编辑沿用
+固定上游默认 `gemini-3-pro-image`。`--vlm-config` 仅复用已有私有凭据；
+媒体路线不会调用该配置内的 GPT 模型。文字和图片均采用非流式原生响应，
+保留拒绝、截断及错误状态。其他旧 CLI 调用的代理开关行为保持兼容。
+
+先独立验证三类实际请求，输出目录必须是新目录：
+
+```bash
+venv/genesis/bin/python -m self_improving.sim_adapters.simfoundry.native_service \
+  --config configs/llm.yaml --image /absolute/path/mouse.jpg \
+  --output-dir data/media_acceptance/native_probe_new
+```
+
+`report.json` 记录各能力、实际模型和耗时；图片编辑必须返回可解码图片。
+HTTP 错误只记录状态码，不记录凭据、请求头和错误响应正文。统一入口也执行该预检。
+上游执行采用同一用户的主机级重建锁、串行阶段及日志脱敏。
+
+2026-09-07 当前工作区的实际三类探测均通过；图片编辑返回 896×1200 PNG。
+此结果仅证明接口能力，不代表重建或物理通过。大文件和私有配置不提交到 Git。
+
+当前工作区在线验收与阻塞详见
+[媒体验收证据](../genesis/MEDIA_RECONSTRUCTION_EVIDENCE.md#本轮实际结果与恢复2026-09-07-2213)。
+原生接口预检通过不保证后续长请求成功；本轮物体检测连续三次读取超时，
+图片及视频均未完成全流程验收。
+
+最新 `native_003` 新密钥重跑已完成上游重建，前景 URDF 导出成功，当前阻塞
+位于 Genesis 桌面选择的 `invalid_json`。前述连续超时属于旧轮次；本轮仍未
+进入 Genesis 物理与最终展示，详见媒体验收证据中的新密钥重跑记录。

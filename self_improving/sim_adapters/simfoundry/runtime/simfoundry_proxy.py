@@ -1,10 +1,11 @@
 """Use native nonstream text responses for proxies with incompatible SSE metadata."""
 
+import os
 from collections.abc import Mapping
 from functools import wraps
 
 
-def adapt_models_class(models_class):
+def adapt_models_class(models_class, *, nonstream_images=False):
     """Preserve SDK response objects and finish reasons; only change text transport."""
     original = models_class.generate_content_stream
     if getattr(original, "_simfoundry_nonstream_text", False):
@@ -17,7 +18,9 @@ def adapt_models_class(models_class):
             if isinstance(config, Mapping)
             else getattr(config, "response_modalities", [])
         )
-        if any(str(value).upper().split(".")[-1] == "IMAGE" for value in modalities or []):
+        if not nonstream_images and any(
+            str(value).upper().split(".")[-1] == "IMAGE" for value in modalities or []
+        ):
             yield from original(self, model=model, contents=contents, config=config)
         else:
             # Yield the complete SDK response. Do not erase safety, truncation, or usage metadata.
@@ -30,4 +33,5 @@ def adapt_models_class(models_class):
 def install():
     from google.genai.models import Models
 
-    adapt_models_class(Models)
+    adapt_models_class(Models, nonstream_images=
+                       os.environ.get("SIMFOUNDRY_GEMINI_NONSTREAM_IMAGES") == "1")

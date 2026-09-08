@@ -98,6 +98,8 @@ def test_four_assets_half_timestep(acceptance_root):
     "case",
     [
         "calibration",
+        "mesh_calibration",
+        "margin_slack",
         "three_levels",
         "deep_penetration",
         "fixed_suspension",
@@ -128,7 +130,7 @@ def test_real_fixtures(acceptance_root, case):
     official.verify_files(out, report["files"])
     assert report["render_status"] == "not_run"
     assert not list(out.rglob("*.png")) and not list(out.rglob("*.mp4"))
-    if case in ("calibration", "three_levels"):
+    if case in ("calibration", "mesh_calibration", "margin_slack", "three_levels"):
         assert completed.returncode == 0 and report["status"] == "physics_passed", report
         assert report["steps_executed"] == 1000
         if case == "three_levels":

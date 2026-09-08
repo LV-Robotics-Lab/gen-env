@@ -18,8 +18,11 @@ ROOT = Path(__file__).resolve().parents[4]
 
 
 def test_requested_mouse_media_metadata():
-    image = ROOT / "test/鼠标.jpg"
-    video = ROOT / "test/鼠标视频.mp4"
+    fixture_root = ROOT / "test"
+    if not (fixture_root / "鼠标.jpg").is_file():
+        fixture_root = ROOT.parent
+    image = fixture_root / "鼠标.jpg"
+    video = fixture_root / "鼠标视频.mp4"
     if not image.is_file() or not video.is_file():
         pytest.skip("user-provided media fixtures are local-only")
     image_report = media.probe_media(image, "image")

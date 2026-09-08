@@ -112,7 +112,11 @@ def test_physical_false_positives_rejected(attack):
         if attack == "ground_settled":
             state["position"][2] = 0
         if attack == "moving":
+            # A body that carries a velocity must also travel; a frozen position with a
+            # nonzero reading is not a trace any solver can produce, and rest is decided
+            # on where the body actually goes.
             state["velocity"][0] = 0.011
+            state["position"][0] += 0.011 * row["step"] * data["settings"]["dt"]
         if attack == "rotation" and row["step"] == 8:
             state["orientation_wxyz"] = [np.cos(0.01), 0, 0, np.sin(0.01)]
         if attack == "penetration" or (attack == "initial_penetration" and row["step"] == 0):
@@ -332,11 +336,20 @@ def test_independent_lifecycle_and_failure_evidence(tmp_path, monkeypatch, attac
 
 
 def test_fixed_profiles_keep_duration_and_thresholds():
+    """Everything is shared except the limits that a step size actually determines.
+
+    The effective-speed limit is derived from each profile's own g*dt, because a single
+    shared constant is either unreachable at the coarse step or slack at the fine one.
+    """
     a, b = checks.settings("baseline"), checks.settings("half_dt")
     assert a["dt"] * a["steps"] == b["dt"] * b["steps"] == 4
-    assert {k: v for k, v in a.items() if k not in ("dt", "steps")} == {
-        k: v for k, v in b.items() if k not in ("dt", "steps")
+    varies = ("dt", "steps", "effective_speed_mps")
+    assert {k: v for k, v in a.items() if k not in varies} == {
+        k: v for k, v in b.items() if k not in varies
     }
+    assert a["effective_speed_mps"] == 2 * b["effective_speed_mps"]
+    for cfg in (a, b):
+        assert cfg["effective_speed_mps"] > abs(cfg["gravity"][2]) * cfg["dt"]
 
 
 def test_zero_inertia_fixed_child_is_allowed_but_free_child_is_not():

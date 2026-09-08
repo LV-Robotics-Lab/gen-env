@@ -24,3 +24,24 @@ PYTHON_BIN=/absolute/path/to/simfoundry/python python -m pytest -q external/SimF
 ```
 
 该测试不代表模型服务、重建或 Genesis 物理端到端验收。
+
+另需应用空结果门控补丁，防止分割物体全部被剔除后仍标记阶段成功：
+
+```bash
+git -C external/SimFoundry apply --check ../../self_improving/sim_adapters/simfoundry/patches/media-empty-decomposition.patch
+git -C external/SimFoundry apply ../../self_improving/sim_adapters/simfoundry/patches/media-empty-decomposition.patch
+```
+
+统一媒体入口禁用整图上采样生成（`s5_scene.use_upsampled_source_image=false`），
+确保分割 RGB 与深度同源；物体裁剪图补全继续使用固定默认图片模型。
+静态场景不额外生成机器人（`s14_og.include_robot=false`）。
+
+单图兼容视频还需应用奇数尺寸补丁（2026-09-08 真实输入 1280×1707 触发）：
+
+```bash
+git -C external/SimFoundry apply --check ../../self_improving/sim_adapters/simfoundry/patches/media-odd-image.patch
+git -C external/SimFoundry apply ../../self_improving/sim_adapters/simfoundry/patches/media-odd-image.patch
+```
+
+仅兼容 H.264 视频补齐右侧／下侧最多一个像素；提供给深度和分割的 PNG 保持原尺寸和像素。
+真实 FFmpeg 回归见 `genesis/tests/test_single_image_encoding.py`。

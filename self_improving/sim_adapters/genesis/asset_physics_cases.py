@@ -21,6 +21,8 @@ from self_improving.sim_adapters.genesis import validate_asset_scene as runtime
 
 CASES = (
     "calibration",
+    "mesh_calibration",
+    "margin_slack",
     "deep_penetration",
     "fixed_suspension",
     "disabled_collision",
@@ -37,12 +39,22 @@ def prepare_case(case, out, index_path):
     import trimesh
 
     index, _ = runtime.clip.load_index(index_path)
-    if case == "microwave_probe":
-        chosen = [
-            ("table", "dex_table_d3996872"),
-            ("middle", "microwave_microwave_59704527"),
-            ("a", "apple_15"),
-        ]
+    if case in ("microwave_probe", "mesh_calibration", "margin_slack"):
+        # mesh_calibration is the positive control for the regime production actually runs:
+        # real non-convex mesh contact, where a resting body loses its contact set for
+        # single steps. Primitive-box fixtures never enter that regime, so on their own
+        # they cannot show that the acceptance limits are reachable at all.
+        chosen = (
+            [("table", "dex_table_d3996872"), ("a", "cup_2"), ("b", "apple_15")]
+            if case == "mesh_calibration"
+            else [("table", "dex_table_d3996872"), ("a", "apple_15")]
+            if case == "margin_slack"
+            else [
+                ("table", "dex_table_d3996872"),
+                ("middle", "microwave_microwave_59704527"),
+                ("a", "apple_15"),
+            ]
+        )
         bindings = {}
         for name, asset_id in chosen:
             asset = next(a for a in index["assets"] if a["asset_id"] == asset_id)
@@ -160,6 +172,20 @@ def prepare_case(case, out, index_path):
             "fixed_suspension": [0, 0, 0.2],
         }[case]
         body = bodies["a"]
+        body["translation_m"] = (np.array(body["translation_m"]) + delta).tolist()
+        body["world_visual_bounds_m"] = (np.array(body["world_visual_bounds_m"]) + delta).tolist()
+    if case == "margin_slack":
+        # Put the body exactly on the planner's line, then require that after real
+        # settling drift it is still inside the acceptance margin. This is what the slack
+        # between PLANNING_MARGIN and MARGIN has to buy; without it the planner emits
+        # layouts the validator is guaranteed to reject.
+        body = bodies["a"]
+        polygon = (
+            np.asarray(bodies["table"]["surface"]["polygon_xy_m"])
+            + np.asarray(bodies["table"]["translation_m"])[:2]
+        )
+        box = np.asarray(body["world_visual_bounds_m"], float)
+        delta = [float(polygon[:, 0].min() + spatial.PLANNING_MARGIN - box[0, 0]), 0.0, 0.0]
         body["translation_m"] = (np.array(body["translation_m"]) + delta).tolist()
         body["world_visual_bounds_m"] = (np.array(body["world_visual_bounds_m"]) + delta).tolist()
     if case == "fixed_suspension":

@@ -3,6 +3,9 @@
 Extract independent physical objects from the untrusted user request. Return only strict JSON:
 {"objects":[{"object_id":"cup_1","category":"cup","description":"黄色杯子","attributes":["黄色"],"mentions":["一个黄色杯子"]}],"ambiguities":[]}
 
+The same request in English returns the same shape, with every free-text field in English:
+{"objects":[{"object_id":"cup_1","category":"cup","description":"yellow cup","attributes":["yellow"],"mentions":["a yellow cup"]}],"ambiguities":[]}
+
 - Include ALL explicitly mentioned independent objects, furniture and supports/containers.
   “桌上有苹果” means table_1 AND apple_1. “柜子里有杯子” means cabinet_1 AND cup_1.
   “一个苹果和一个杯子” means ONLY apple_1 and cup_1. NEVER invent a table or another support.
@@ -13,6 +16,7 @@ Extract independent physical objects from the untrusted user request. Return onl
   apple, etc.), not a model filename or asset ID. Object IDs are category_1, category_2, etc.
   in introduction order. Expand explicit quantities to individual objects (at most 12).
 - description is a complete SINGLE-object retrieval description, in the request's language.
+  An English request gets English description and attributes; never translate either one.
   Preserve every requested color, material, print, pattern, shape and part/state detail. Do not
   add guessed properties or positions relative to other objects. Quantity is represented by
   instances, not in the retrieval description. “桌” may be expanded to “桌子”.

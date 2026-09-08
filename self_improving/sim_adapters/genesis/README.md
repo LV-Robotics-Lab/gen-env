@@ -1,13 +1,19 @@
 # Genesis 平台适配器
 
+已有场景图现通过既有物理入口完成位置求解、干预式稳定化和独立双时间步验收，支持多固定支撑、堆叠及方位关系，见 [场景图物理流程](POSITION_SOLVER.md)。
+
 SimFoundry 重建物体现可导入为自包含 URDF 包，并与官方库联合检索；选中后执行单资产落体验证，失败报错且保留候选。见 [标准资产接入指南](SIMFOUNDRY_ASSETS.md)。
 
 已有重建场景还可保留完整位姿导入 v2 场景图，并在 Genesis 中核验、预览及独立运行物理诊断，见 [场景图转换指南](SIMFOUNDRY_SCENES.md)。
 ## 单图/视频统一重建
 
-`reconstruct_media` 把单图或视频统一送入 SimFoundry，随后导入前景资产、从现有
-Genesis 六视图索引检索有限桌面资产、构建 `support_0`、运行最多四次真实物理尝试，
-且仅在物理通过后写入 `04_final_render`：
+`reconstruct_media` 默认采用 `--support-mode upstream`：导入前景资产，保留上游
+物体位姿和平面的开关、可见性与变换，不检索桌子、不新增 `support_0`。
+输出止于 `02_scene/preview` 的三视图和环绕预览；03/04 为 `not_run`，
+退出码 0 表示转换与预览成功，不表示 Genesis 物理通过。
+显式使用 `--support-mode retrieved --clip-index <index.json>` 才运行原有限桌面选择、
+位置求解、稳定化、双时间步验收及通过后的最终渲染。
+默认模式无需 CLIP 索引，以下命令中的索引参数仅供切换检索模式时使用：
 
 ```bash
 .venv/bin/python -m self_improving.sim_adapters.genesis.reconstruct_media \
@@ -22,13 +28,24 @@ Genesis 六视图索引检索有限桌面资产、构建 `support_0`、运行最
 ```
 
 两种输入严格互斥。已有任务只有在 `--resume` 且任务名、输入 SHA-256、模式和有效配置
-完全一致时才继续。退出码 0 表示物理及渲染通过，1 表示输入/依赖/模型/转换错误，
+完全一致时才继续。检索模式退出码 0 表示物理及渲染通过，1 表示输入/依赖/模型/转换错误，
 2 表示修复后物理仍失败，3 表示稳定但声明关系未验证。旧 SimFoundry
 `run.sh reconstruct --video-fpath` 仍可用，但不会自动进入 Genesis 四阶段。
 支撑观测、单图推断边界及本机鼠标媒体运行状态见
 [统一重建验收](MEDIA_RECONSTRUCTION_EVIDENCE.md)。
 
 
+已有重建可直接转换，不重复调用模型：
+
+```bash
+venv/genesis/bin/python -m self_improving.sim_adapters.genesis.reconstruct_media \
+  --reconstruction-scene /path/to/reconstruction \
+  --name '按SimFoundry原始支撑面转换重建场景' --output-root output
+```
+
+输出保留 `01_obj/source_outputs` 的上游 JSON、`01_obj/foreground_assets` 的标准 URDF
+和 `02_scene` 自包含场景包。背景、高斯和机器人不在当前导入范围；
+上游有额外桌子却缺少匹配资产包时明确报错，不自动替换。
 
 `output/` 只保存按输入命名的任务目录。共享资产、预览和索引位于 `assets/genesis/`；
 缓存、按需下载的 CLIP 权重及任务锁位于 `.cache/genesis/`；历史验收位于
@@ -466,7 +483,7 @@ MJCF 保留原文件材料与惯量来源，记录实际质量、各 link 惯量
 官方 `collider.get_contacts()` 统一读取。每步的双方接触力与独立净接触力观测交叉核验。
 初态及每次真实步进写一行，完整基线/半时间步分别为 1001/2001 行；异常保留部分证据。
 
-终末 0.5 秒检查位移 ≤1 mm、转角 ≤0.5°、速度 ≤0.01 m/s、角速度 ≤0.05 rad/s；
+终末 0.5 秒检查位移 ≤1 mm、转角 ≤0.5°，静止以位姿演化判定：净漂移速率 ≤2 mm/s、窗口内相对均值最大偏移 ≤1 mm、净转速 ≤1°/s；辅以扫掠半径加权的有效速度 `max(|v|, r·|ω|)`，阈值按每个 profile 从 `g·dt` 派生，且要求连续 5 步超限才算动。掉接触率是独立判据（≤0.05）；
 声明父对象提供向上合力 >1e-6 N 的采样比例须 ≥0.8。初态及全程穿透 ≤1 mm。
 使用目标当前局部坐标验证完整源视觉投影与实测支撑面，保持 2 cm 余量；支撑面倾斜
 超过 0.5° 则首版模型不支持。直接父子接触合法，终末图外接触失败。左右前后、远近
@@ -532,9 +549,9 @@ GENESIS_ASSET_PHYSICS_OUTPUT=data/genesis_asset_physics/acceptance_new \
 
 - 官方 `mug_1/model.xml` 转成单 link URDF，保留独立 visual、纹理和 32 个 collision 部件；MJCF 几何变换烘焙到各个 mesh。转换后逐点核对几何，误差上限 1 µm。`measurement.json` 保存原始文件和转换文件哈希；来源 revision 是官方示例声明，实际本地字节另行指纹绑定，不声称经过远端认证。
 - 杯内区域在仿真前测量：向下射线探测杯底，逐个凸碰撞部件与内部棱柱做线性可行性检查，只有全部明确不相交才接受。该区域是保守子区域，不是完整杯腔；实际落点在杯内但越出该区域也会失败，不自动扩大区域。
-- 默认 CPU、seed 0、`dt=0.004s`、1000 步、substeps 1、重力 `(0,0,-9.81)`；Newton solver、50 次迭代、tolerance `1e-8`、关闭休眠。约束 time constant 声明为 `0.001s`，Genesis 会按时间步钳制；报告同时保存请求配置与实际各 geom 的 solver 参数。
+- 默认 CPU、seed 0、`dt=0.004s`、1000 步、substeps 1、重力 `(0,0,-9.81)`；Newton solver、50 次迭代、tolerance `1e-8`、关闭休眠。约束 time constant 为 `0.05s`：低于 `2*dt` 会被 Genesis 静默钳到该下限并在最不稳定处求解，原先声明的 `0.001s` 正是如此，也是接触掉线极限环的来源。报告同时保存请求配置与实际各 geom 的 solver 参数。
 - Box 密度 1000 kg/m³、摩擦 0.5；mug 摩擦和 solref/solimp 来自官方 MJCF，URDF 保留质量和惯量。实际加载质量、摩擦、碰撞数和自由度写入报告，固定体在 Genesis 中有效质量为 0。
-- 从释放前开始记录全部步骤，不预沉降、不重置位姿、不在物理期间渲染。终末 0.5 秒最大位移 ≤ 1 mm、旋转 ≤ 0.5°、速度 ≤ 0.01 m/s、角速度 ≤ 0.05 rad/s。
+- 从释放前开始记录全部步骤，不预沉降、不重置位姿、不在物理期间渲染。终末 0.5 秒最大位移 ≤ 1 mm、旋转 ≤ 0.5°，静止判据同上（位姿演化为主、有效速度为辅）。默认从最低碰撞顶点上方 10 mm 释放；`--at-rest` 改为贴面释放，用于源位姿本就静置的场景 —— 验收一字未改（穿透仍逐帧检查），只是不再包含一次该场景根本不存在的落地冲击。这类运行不是落体测试，`verify_evidence` 会拒绝它作为下游资产证据。
 - 终末接触正确目标且有向上合力的比例 ≥ 0.8；完整对象包围角点投影须在桌面支撑区内。全程所有接触（含支撑对）的最大穿透 ≤ 1 mm。
 - 入杯 Box 初始完整底面高于杯口，终末八个顶点全部在 mug 局部测量区域内，且全程不接触桌面。缺行、非有限数、接触读取异常均失败。
 

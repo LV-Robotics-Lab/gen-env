@@ -121,6 +121,12 @@ def clean_objects(document, request):
                 raise ValueError('attribute missing from source or retrieval description')
         # Full noun phrase coverage, including prints/handles, instead of a color-only query.
         n, phrase = quantity(mentions[0])
+        # English marks the support with a leading preposition the Chinese locative rule
+        # below never sees: "on a table" is still a mention of the table. Drop the
+        # preposition and re-read the quantity, never any descriptor after it.
+        stripped = re.sub(r'^\s*(?:on|onto|upon|atop|in|inside|at|over)\s+', '', phrase, flags=re.I)
+        if stripped != phrase:
+            n, phrase = quantity(stripped)
         if category == 'table':
             # A support locative is not an asset attribute: 桌上 still retrieves 桌子.
             # Retain all preceding descriptors; never strip colours/materials.

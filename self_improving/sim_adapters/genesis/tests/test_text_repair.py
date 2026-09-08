@@ -47,6 +47,26 @@ def case(stack=False):
     return data, rows
 
 
+def moving(data):
+    """A speed this configuration's own derived limit calls motion, whatever its step size.
+
+    Written against the frozen settings rather than a literal, because the limit is now
+    calibrated per step size: any constant here would silently stop meaning "moving" the
+    moment a profile changed dt.
+    """
+    return 2 * data["settings"]["effective_speed_mps"]
+
+
+def scattered(rows, count, window=500):
+    """`count` non-adjacent samples of the terminal window.
+
+    Spread apart so the sample fraction is what decides. A consecutive run of motion is
+    separately a failure now, which the run test below covers on its own.
+    """
+    tail = rows[-window:]
+    return tail[:: max(1, window // count)][:count]
+
+
 def test_baseline_and_dynamic_stack():
     for stack in (False, True):
         data, rows = case(stack)
@@ -57,28 +77,66 @@ def test_baseline_and_dynamic_stack():
 @pytest.mark.parametrize("bad_count,passed", [(25, True), (26, False), (500, False)])
 def test_exact_95_percent_speed(bad_count, passed):
     data, rows = case()
-    for row in rows[-bad_count:]:
-        row["objects"]["a"]["velocity"] = [0.01, 0, 0]
+    for row in scattered(rows, bad_count):
+        row["objects"]["a"]["velocity"] = [moving(data), 0, 0]
     result = physics.evaluate(data, rows)
     assert result["passed"] is passed
     assert result["objects"]["a"]["stable_fraction"] == (500 - bad_count) / 500
 
 
-@pytest.mark.parametrize("bad_count,passed", [(25, True), (26, False)])
-def test_support_contact_jitter_boundary(bad_count, passed):
+def test_consecutive_overspeed_fails_inside_the_five_percent_allowance():
+    """Motion that persists is motion, even where the sample fraction still allows it.
+
+    Genesis decides rest on consecutive steps for the same reason: a proportion cannot
+    separate a body creeping for a tenth of a second from scattered solver noise.
+    """
     data, rows = case()
-    for row in rows[-bad_count:]:
+    for row in rows[-25:]:
+        row["objects"]["a"]["velocity"] = [moving(data), 0, 0]
+    result = physics.evaluate(data, rows)
+    assert result["objects"]["a"]["stable_fraction"] == 0.95
+    assert result["objects"]["a"]["overspeed_run_steps"] == 25
+    assert "stable_velocity" in result["failures"]["a"]
+
+
+@pytest.mark.parametrize("bad_count,passed", [(25, True), (26, False)])
+def test_support_force_boundary(bad_count, passed):
+    """Touching the declared parent while it holds no weight is a support failure."""
+    data, rows = case()
+    for row in scattered(rows, bad_count):
+        row["contacts"][0].update(force_a=[0, 0, 0], force_b=[0, 0, 0])
+    result = physics.evaluate(data, rows)
+    assert result["passed"] is passed
+    assert result["objects"]["a"]["touching_samples"] == 500
+    assert result["objects"]["a"]["support_fraction"] == (500 - bad_count) / 500
+
+
+@pytest.mark.parametrize("bad_count,passed", [(25, True), (26, False)])
+def test_contact_dropout_boundary(bad_count, passed):
+    """A lost contact set is charged to continuity, once, and never to support.
+
+    This is the artefact the old criteria read twice: as a speed spike and as a missing
+    support, so a solver setting arrived as two separate accusations against the scene.
+    """
+    data, rows = case()
+    for row in scattered(rows, bad_count):
         row["contacts"] = row["contacts"][1:]
-    assert physics.evaluate(data, rows)["passed"] is passed
+    result = physics.evaluate(data, rows)
+    assert result["passed"] is passed
+    assert result["objects"]["a"]["support_fraction"] == 1.0
+    assert result["objects"]["a"]["contact_dropout_fraction"] == bad_count / 500
+    if not passed:
+        assert result["failures"]["a"] == ["contact_continuity"]
 
 
 def test_angular_speed_scales_with_radius():
     data, rows = case()
+    target = moving(data)
     for row in rows[1001:]:
-        row["objects"]["a"]["angular_velocity"] = [0, 0, 0.011 / data["assets"]["a"]["radius_m"]]
+        row["objects"]["a"]["angular_velocity"] = [0, 0, target / data["assets"]["a"]["radius_m"]]
     result = physics.evaluate(data, rows)
     assert "stable_velocity" in result["failures"]["a"]
-    assert result["objects"]["a"]["effective_velocity_max_mps"] == pytest.approx(0.011)
+    assert result["objects"]["a"]["effective_velocity_max_mps"] == pytest.approx(target)
 
 
 @pytest.mark.parametrize(
@@ -240,7 +298,7 @@ def test_repair_rechecks_entire_scene_and_keeps_attempts(tmp_path, monkeypatch):
                 row["objects"][n].update(copy.deepcopy(pose))
         if not calls:
             for row in rows[1001:]:
-                row["objects"]["a"]["velocity"] = [0.02, 0, 0]
+                row["objects"]["a"]["velocity"] = [moving(current), 0, 0]
         calls.append(copy.deepcopy(current))
         (out / "trace.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
         (out / "final_state.json").write_text(json.dumps(dict(state=rows[-1])))
@@ -334,7 +392,7 @@ def test_task_lifecycle_source_readonly_and_final_gate(tmp_path, monkeypatch, mo
         rows = copy.deepcopy(template)
         if mode == "exhausted":
             for row in rows[1001:]:
-                row["objects"]["a"]["velocity"] = [0.02, 0, 0]
+                row["objects"]["a"]["velocity"] = [moving(current), 0, 0]
         (out / "trace.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
         (out / "final_state.json").write_text(json.dumps(dict(state=rows[-1])))
         if mode == "tampered":
@@ -499,16 +557,16 @@ def test_strict_75_percent_profile(bad_count, passed, metric):
     data, rows = case()
     data = physics.frozen_input(data["assets"], data["poses"], [], 0,
                                 profile=physics.GT75_PROFILE)
-    for row in rows[-bad_count:]:
+    for row in scattered(rows, bad_count):
         if metric == "speed":
-            row["objects"]["a"]["velocity"] = [0.01, 0, 0]
+            row["objects"]["a"]["velocity"] = [moving(data), 0, 0]
         else:
-            row["contacts"] = row["contacts"][1:]
+            row["contacts"][0].update(force_a=[0, 0, 0], force_b=[0, 0, 0])
     result = physics.evaluate(data, rows)
     assert result["passed"] is passed
     assert result["profile"] == physics.GT75_PROFILE
     if metric == "support":
-        # Only a loses contact; the second dynamic object b remains supported.
+        # Only a loses its upward support; the second dynamic object b keeps its own.
         assert result["support_preservation_ratio"] == (1.0 if passed else 0.5)
 
 
@@ -517,7 +575,9 @@ def test_75_profile_changes_only_the_two_acceptance_fractions():
     new = physics.settings(physics.GT75_PROFILE)
     assert {k for k in new if new[k] != old.get(k)} == {
         "profile", "stable_fraction", "support_fraction", "fraction_comparison"}
-    assert old == physics.SETTINGS
+    # The one key settings() adds is the speed limit it derives from this profile's dt.
+    assert {k: v for k, v in old.items() if k != "effective_speed_mps"} == physics.SETTINGS
+    assert old["effective_speed_mps"] > abs(old["gravity"][2]) * old["dt"]
     data, rows = case()
     data["settings"] = new
     with pytest.raises(ValueError, match="settings mismatch"):

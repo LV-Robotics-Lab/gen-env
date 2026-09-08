@@ -872,6 +872,48 @@ def test_provider_config_rejects_unsafe_endpoints(tmp_path: Path, endpoint: str)
     assert local.endpoint.startswith("http://127.0.0.1:")
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://100.64.0.1:8324/v1",  # shared/CGNAT space: a WireGuard peer lives here
+        "http://10.0.0.5:8000/v1",
+        "http://192.168.1.7:8000/v1",
+        "http://[::1]:8000/v1",
+    ],
+)
+def test_provider_config_allows_plaintext_to_unroutable_addresses(
+    tmp_path: Path, endpoint: str
+) -> None:
+    """A bearer token may cross a network the public internet cannot reach."""
+    config = LLMProviderConfig(
+        endpoint=endpoint,
+        model="local-model",
+        api_key="local-secret",
+        cache_dir=tmp_path / "cache",
+    )
+    assert config.endpoint == endpoint
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://8.8.8.8/v1",  # globally routable: the credential would cross it in clear
+        "http://openrouter.ai/api/v1",
+        "http://internal.corp/v1",  # a name is not authenticated, so it cannot qualify
+    ],
+)
+def test_provider_config_still_rejects_plaintext_to_routable_hosts(
+    tmp_path: Path, endpoint: str
+) -> None:
+    with pytest.raises(LLMProviderError, match="endpoint"):
+        LLMProviderConfig(
+            endpoint=endpoint,
+            model="fake-model",
+            api_key="secret",
+            cache_dir=tmp_path / "cache",
+        )
+
+
 def test_redirect_handler_never_forwards_authorization() -> None:
     handler = _NoRedirectHandler()
 

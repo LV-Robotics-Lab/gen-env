@@ -201,18 +201,31 @@ Fruits 完整运行后 5 项稳定性检查通过、2 项失败（梨初态穿�
 [SimFoundry 补丁](../../self_improving/sim_adapters/simfoundry/patches/README.md)。
 子模块仍固定上游 commit；新 checkout 运行前必须应用补丁，不能只初始化子模块就认为具备这些输出。
 
-统一 `reconstruct_media.py` 现接受互斥的单图/视频输入，并把 SimFoundry 前景、
+2026-09-08 支撑策略更新：`reconstruct_media.py` 默认 `--support-mode upstream`，
+保持源场景平面与物体位姿，停止检索有限桌面。默认生成 02 中的三视图与环绕预览，
+03/04 不运行，退出 0 仅表示转换和预览成功。`--reconstruction-scene` 可直接复用
+已有上游结果，原始 JSON 保存于 `01_obj/source_outputs`，不需要模型配置或索引。
+使用 `--support-mode retrieved` 才启用下文记载的有限支撑选择和物理验收流程。
+
+历史有限支撑模式：统一 `reconstruct_media.py` 接受互斥的单图/视频输入，并把 SimFoundry 前景、
 Genesis 支撑资产检索、有限 `support_0`、四轮以内物理修复和通过后渲染接入同一个
 四阶段 TaskOutput。单图固定一帧且禁用 Gaussian splat；视频报告全部解码/互异帧与
 15 个真实采样索引。stage 3 额外保存支撑 mask、深度、内参和 RANSAC 内点，平台结合
 stage 4 变换得到世界点及边界 censoring。支撑候选必须通过格式、哈希、单刚体碰撞和
 有限水平顶面门控，选择失败不回退无限平面。
 
-本机鼠标单图已真实运行到 stage 4，并识别 desk；视频已真实解码 124 帧、124 互异帧，
+此前记录中鼠标单图真实运行到 stage 4，并识别 desk；视频真实解码 124 帧、124 互异帧，
 但同机外部训练占用约 16.5 GiB 显存，分别阻塞后续 stage 5 和令 15 帧 DA3 OOM。
-由于未取得把这两份用户媒体发送到 Gemini 的明确外发授权，在线阶段没有启动。
+该次运行尚未取得媒体外发授权，因此在线阶段没有启动。
 两个任务均保留可验证失败 manifest，03/04 未运行，不能称为物理通过。详情见
 [媒体重建验收](../../self_improving/sim_adapters/genesis/MEDIA_RECONSTRUCTION_EVIDENCE.md)。
+
+当前重做已获用户授权，统一采用其服务的原生 Gemini 调用：文字与识图为
+`gemini-2.5-flash`，图片编辑沿用上游 `gemini-3-pro-image`。三类接口均已实测通过。
+阶段恢复先核验输入、有效配置和产物哈希；配置或阶段失效后归档并重跑下游。
+物理终态独立渲染，渲染失败可以单独重试；120 帧环绕视频不代表输入动作重演。
+当前工作区的非对称夹具真实渲染测试已通过，鼠标端到端通过状态仍以验收记录为准。
+
 
 AgenticSim 名称有两种历史含义：旧产品仓库已经证明是 TacHarness 的稀疏历史状态，其唯一文件归档进 TacHarness 后本机副本已删除；`sim_adapters/agenticsim_runtime/` 只保留后来非 Git 工作区里的 Isaac 编排脚本，二者不能再混用。
 
@@ -291,3 +304,77 @@ Genesis 适配层的 `construct_asset_scene.py` 使用独立 `text_repair_v1`：
 旧参数，因此曾通过原子迁移暂留兼容链接；现有管线结束后该链接及残留空目录已清除。
 新运行示例和本地重跑脚本直接使用 `data/simfoundry/`。
 迁移清单和检查结果见 `data/storage_maintenance/output_reorganization_20260907/`。
+
+2026-09-07 当前工作区真实鼠标验收：原生预检三项通过；单图阶段 1–4 通过，
+阶段 5 物体检测三次读取超时，断点与失败证据已保存。两个样本均未完成全流程，
+详见 `self_improving/sim_adapters/genesis/MEDIA_RECONSTRUCTION_EVIDENCE.md`。
+
+后续新密钥重跑 `鼠标_单图_native_003` 已通过上游重建并导出前景 URDF；
+当前故障移至桌面选择响应的严格 JSON 解析（`invalid_json`）。本地转换、
+索引和请求构造复核通过，原始失败响应未保存，具体返回格式仍待验证。
+Genesis 物理与最终渲染未运行；勿将上游 `s12_physics` 成功等同于物理验收。
+
+桌面选择在线诊断已获明确外发授权并复现：Gemini 返回 Markdown 代码块包裹
+的 JSON，严格解析器报 `invalid_json`；只去掉外层代码块后候选与字段校验
+通过。证据在 `data/media_acceptance/native003_support_online_20260907_224351/`。
+当前生产解析器未修改，Genesis 物理与最终展示仍未执行。
+
+真实鼠标物理试验 `鼠标_物理_native003_002` 已执行。加载器现显式传递
+`fixed=obj["fixed"]`，避免固定桌面被默认加载为动态。基线和同时间长度
+半时间步均有真实接触、穿透通过，但末段速度与角速度超限；最后的 1.25 倍
+摩擦复验仍失败。当前结论为 `physics_failed`，最终展示未生成。
+
+接触振动定位已通过九组真实 Genesis 对照，将主要触发位置缩小到桌面碰撞表示：
+原鼠标保留、仅改闭合有限桌面碰撞体时，末段速度/角速度降至门槛以内；
+增加求解迭代至 200 或合并桌面重复顶点没有改善。`media_support.materialize`
+对本资产使用 `[0,2,1]` 轴重排但保留面绕序，导致负行列式变换后的法线反向。
+单独修正面朝向仍振动；非闭合约 3.3 mm 桌板与默认 5 mm 距离场目标精度
+也是待区分的因素。诊断盒体采用假设厚度及基线接触高度，不能直接提升为正式资产。
+定位证据见 `data/media_acceptance/contact_diagnosis_001/diagnosis.md`；正式状态仍失败。
+
+最后的第十组精度对照已完成：保持原桌面网格顶点，反转面绕序并将桌面
+SDF target=1.5 mm、max_res=384，末段速度 7.32e-7 m/s、角速度
+1.93e-5 rad/s，接触点稳定为 3。该结果支持薄桌板距离场表示是关键因素，
+不再只是未验证猜测；尚未测试精度单改、不修正绕序的组合。十组轨迹指标
+重算一致。生产实现未改，仍须新任务完整物理验收及半时间步复验。
+
+新增独立 `position_solver`：根据显式有限凸支撑区域与 `on` 支撑链，从原始位姿
+生成平移候选，支持多个固定根和逐层堆叠。保留固定根及全部朝向，完整足迹在
+目标局部坐标验证，非父子物体保守排斥，有界回溯；输出 `proposal_ready` 与
+`physics_status=not_run`，不替代物理验收。输入场景包只读，未自动接入媒体流水线；
+原媒体物理入口仍限制单一 support_0。使用方式、适用边界和真实样本证据见
+`self_improving/sim_adapters/genesis/POSITION_SOLVER.md`。
+
+位置求解器已用于一次真实鼠标重建资产验收：新任务 `鼠标_位置求解物理_002`
+同时应用位置提议、桌面碰撞面朝向修正及显式细化 SDF，两次 4 秒基线/半时间步
+由原物理验证器判定通过，另补充全程完整足迹覆盖检查；独立终态展示已生成。
+这是复用已有单图资产的组合修复结果，不代表位置算法单独修复了碰撞故障，
+也不改变通用媒体入口未自动接入和视频未验收的边界。证据详见 POSITION_SOLVER.md。
+
+2026-09-08：既有 `validate_imported_scene` 默认接入场景图物理内部流程，
+`reconstruct_media` 调用同一路径；未新增 CLI 或资产选择。支持多固定根、动态
+堆叠与方位约束；位置求解后干预式稳定化，再从同一候选独立执行两次自由回放。
+删除默认媒体自动换桌面/调摩擦分支，完整足迹、声明接触链、非声明接触及方位
+参与门控。逐阶段缓存区分位置、稳定化与自由回放，终态渲染要求两次均通过。
+本轮三个新任务 mouse/crowded/stack 均通过物理及渲染；stack 为明确参数盒体
+夹具。详见 `self_improving/sim_adapters/genesis/POSITION_SOLVER.md`。
+
+### 2026-09-08 全入口复测边界
+
+清空 `output` 的旧任务已整体移到 `data/genesis_history/output_before_retest_20260908_011810/`，
+旧 JSON 字节和内部路径未重写，历史文档中的旧 `output` 链接需要按归档前缀查找，不能当作当前任务。
+本轮执行及失败证据集中在 `data/media_acceptance/full_pipeline_retest_20260908_011810/`。
+自然语言 `extract_assets` 的原生资产布局仍需显式调用 `validate_asset_scene`；
+它尚未接入标准 URDF 路线的 `scene_physics_workflow`，不能引用后者的夹具通过结果证明文本全流程。
+
+单图输入可以是奇数尺寸。`media-odd-image.patch` 仅给第 1 阶段的兼容视频补齐偶数尺寸，
+避免 H.264 yuv420p 编码失败；重建 PNG 尺寸及像素不变。真实 FFmpeg 奇偶尺寸回归覆盖此行为。
+
+本轮最终复测：4 组文本中 3 组构建成功但真实物理失败，1 组提取失败。视频完成上游重建，
+但支撑适配器尚未读取上游 `selected_idx`。修复奇数尺寸后的鼠标与笔图片完成上游重建、
+位置求解和稳定化，但基线／半时间步均失败；视觉检查确认误选倒扣橙色碗作为桌面。
+不能用这些结果宣称端到端通过。详细指标和后续优先级见上述复测目录的 `README.md`／`summary.json`。
+
+Genesis 资产选择的 Chat 配置接受 `gpt-4o` 和 `openai/gpt-4o` 两种模型名；
+`clip_select.select` 保留完整名称用于请求、证据与缓存，不剥除供应商前缀。
+其他模型或 Responses 模式仍在发送请求前拒绝。

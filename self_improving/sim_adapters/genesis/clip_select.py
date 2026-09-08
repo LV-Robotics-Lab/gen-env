@@ -390,7 +390,7 @@ def select(clip_index, query, output_dir, *, top_k=3, vlm_config=None, profile=N
         config = (vlm_config if isinstance(vlm_config, LLMProviderConfig)
                   else load_llm_provider_config(vlm_config, profile=profile))
         config = replace(config, timeout_s=timeout_s, max_attempts=1)
-        if config.api_mode != "chat" or config.model != "gpt-4o":
+        if config.api_mode != "chat" or config.model not in {"gpt-4o", "openai/gpt-4o"}:
             raise SelectionError("expected_gpt_4o_chat_configuration")
         report["vlm_config"] = config.safe_dict()
         stage = "integrity"

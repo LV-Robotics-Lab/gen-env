@@ -128,3 +128,12 @@ def test_invalid_evidence_rejected(change, match):
         rows[2]["contacts"][0]["force_a"][2] = 99
     with pytest.raises(ValueError, match=match):
         physics.evaluate(rows, layout, cfg)
+
+
+def test_support_sdf_override_is_explicit_and_bounded():
+    assert physics.support_sdf() == {}
+    assert physics.support_sdf(.0015, 384) == dict(sdf_cell_size=.0015, sdf_max_res=384)
+    for cell, res in [(None, 384), (.0015, None), (float('nan'), 128),
+                      (.0001, 384), (.0015, 1000), (True, 128), (.0015, 128.5)]:
+        with pytest.raises(ValueError, match='support SDF'):
+            physics.support_sdf(cell, res)

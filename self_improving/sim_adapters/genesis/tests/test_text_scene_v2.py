@@ -97,7 +97,8 @@ def test_v2_task_state_and_no_blind_contact_retries(
         rows = copy.deepcopy(template)
         if mode == "contact":
             for row in rows[-26:]:
-                row["objects"]["a"]["velocity"] = [0.01, 0, 0]
+                row["objects"]["a"]["velocity"] = [
+                    2 * current["settings"]["effective_speed_mps"], 0, 0]
         (out / "trace.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
         (out / "final_state.json").write_text(json.dumps(dict(state=rows[-1])))
         check()

@@ -29,6 +29,8 @@ from self_improving.sim_adapters.genesis.task_output import TaskOutput
 
 SCHEMA = spatial.SCHEMA
 GAP, MARGIN = .06, .02
+SETTLING_SLACK = .015
+PLANNING_MARGIN = MARGIN+SETTLING_SLACK
 FORMATS = {'.xml', '.urdf', '.glb', '.gltf', '.obj', '.stl'}
 
 
@@ -187,11 +189,11 @@ def layout_objects(document, bindings, geometry):
             placed = box+translation
             rectangle = np.array([[placed[0, 0], placed[0, 1]], [placed[1, 0], placed[0, 1]],
                                   [placed[1, 0], placed[1, 1]], [placed[0, 0], placed[1, 1]]])
-            if not fits_surface(surface, rectangle):
+            if not fits_surface(surface, rectangle, margin=PLANNING_MARGIN):
                 raise ValueError('full object footprint does not fit measured support surface')
             poses[child] = poses[name]+translation
             placements.append(dict(object_id=child, footprint_target_xy_m=rectangle.tolist(),
-                                   margin_m=MARGIN, coverage='passed'))
+                                   margin_m=PLANNING_MARGIN, coverage='passed'))
             child_x += widths[child]+GAP
         surfaces[name] = dict(surface, world_z_m=surface['z_m']+poses[name][2],
                               child_placements=placements)

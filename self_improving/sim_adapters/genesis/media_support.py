@@ -15,6 +15,7 @@ from PIL import Image
 from scene_gen.llm_provider import load_llm_provider_config
 from self_improving.sim_adapters.genesis import asset_library as lib
 from self_improving.sim_adapters.genesis import build_official_index as official
+from self_improving.sim_adapters.genesis import build_scene as builder
 from self_improving.sim_adapters.genesis import clip_select as clip
 from self_improving.sim_adapters.genesis import standard_urdf as standard
 from self_improving.sim_adapters.genesis.storage_paths import local_path
@@ -312,7 +313,8 @@ def choose(candidates, crop_path, preview_root, vlm_config, *, vlm=None):
     if selection["status"] != "selected":
         raise ValueError("VLM rejected all support candidates")
     selected = next(c for c in candidates if c["candidate_id"] == selection["candidate_id"])
-    return selected, dict(raw_response=raw, selection=selection, config=config.safe_dict())
+    effective = client.safe_dict() if hasattr(client, "safe_dict") else config.safe_dict()
+    return selected, dict(raw_response=raw, selection=selection, config=effective)
 
 
 def target_footprint(observation, foreground_layout, margin=0.05):
@@ -403,6 +405,9 @@ def _mean_color(path):
     return np.median(pixels, axis=0) if len(pixels) else np.array([180, 180, 180])
 
 
+MAXIMUM_SUPPORT_MAGNIFICATION = 2.5
+
+
 def materialize(candidate, footprint, crop_path, preview_root, output_dir):
     """Create one self-contained fixed, collidable standard URDF package."""
     import trimesh
@@ -416,9 +421,25 @@ def materialize(candidate, footprint, crop_path, preview_root, output_dir):
     vertices = np.asarray(mesh.vertices, float)[:, gate["axis_order"]]
     vertices[:, 2] *= gate["up_sign"]
     faces = np.asarray(mesh.faces, int)
-    current = np.asarray(gate["top_extents_m"], float)
+    # Scale against the same strict top face the placement solver will later measure.
+    # The gate's estimate accepts any upward face within 10 mm of the top, so it spans
+    # rails and trim as well as the tabletop; scaling to it leaves the real flat surface
+    # about 30% short of the observed footprint, and objects then do not fit on it.
+    patch = np.asarray(builder.support_surface(vertices, faces)["polygon_xy_m"], float)
+    current = patch.max(0) - patch.min(0)
     requested = np.asarray(footprint["extents_xy_m"], float)
     xy_scale = np.maximum(requested / current, 1e-6)
+    # Retrieval is allowed to trim an oversized asset, never to inflate a small object
+    # into a support it is not. Blowing a bowl up fivefold yields desk-sized bounds with
+    # a bowl's cavity underneath, and every stage downstream then reasons about a
+    # tabletop that does not exist.
+    if float(xy_scale.max()) > MAXIMUM_SUPPORT_MAGNIFICATION:
+        raise ValueError(
+            f"support candidate {candidate['asset_id']} needs {xy_scale.max():.2f}x "
+            f"magnification to reach the observed {requested[0]:.3f}x{requested[1]:.3f} m "
+            f"footprint from its {current[0]:.3f}x{current[1]:.3f} m top face; it is not "
+            'the observed support'
+        )
     z_scale = math.sqrt(float(xy_scale[0] * xy_scale[1]))
     vertices *= [xy_scale[0], xy_scale[1], z_scale]
     vertices[:, :2] -= (vertices[:, :2].min(0) + vertices[:, :2].max(0)) / 2
@@ -573,18 +594,18 @@ def augment_scene(base_scene, support_package, observation, output_dir):
         ground=None, position_m=[0.0, 0.0, 0.0], z_m=0.0, visible=False,
         orientation_wxyz=[1.0, 0.0, 0.0, 0.0]
     )
-    local_polygon = [
-        [float(bounds[0, 0]), float(bounds[0, 1])],
-        [float(bounds[1, 0]), float(bounds[0, 1])],
-        [float(bounds[1, 0]), float(bounds[1, 1])],
-        [float(bounds[0, 0]), float(bounds[1, 1])],
-    ]
+    # The support patch has to be the asset's real flat top, measured from its collision
+    # mesh. Declaring the visual bounding rectangle instead claims a solid surface across
+    # everything the asset spans, including the open air beyond the tabletop, and objects
+    # placed there are released above nothing.
+    measured_surface = builder.support_surface(
+        measured["collision"], measured["collision_faces"]
+    )
     layout["support_surfaces"] = {
         SUPPORT_ID: {
-            "z_m": 0.0,
-            "polygon_xy_m": local_polygon,
+            **measured_surface,
             "world_bounds_xy_m": footprint["bounds_xy_m"],
-            "source": "measured_visible_plus_inferred_completion",
+            "source": "measured_collision_top_face",
         }
     }
     graph["nodes"].append(

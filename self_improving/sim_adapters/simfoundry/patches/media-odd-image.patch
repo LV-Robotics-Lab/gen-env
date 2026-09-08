@@ -1,0 +1,11 @@
+--- a/scripts/pipeline/A_reconstruction/stages/1b_process_raw_video.py
++++ b/scripts/pipeline/A_reconstruction/stages/1b_process_raw_video.py
+@@ -103,6 +103,8 @@
+         "-i", raw_image_fpath,
+         "-t", "1",
+         "-r", "1",
++        # H.264 yuv420p needs even dimensions; preserve the canonical PNG pixels.
++        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+         "-pix_fmt", "yuv420p",
+         processed_video_fpath,
+     ], check=True)

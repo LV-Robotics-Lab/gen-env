@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 
 import numpy as np
 
@@ -31,18 +33,100 @@ _REGISTRY = {
         max_collision_pairs=1024,
         max_contacts=4096,
     )
-    for dt in (2.0, 1.0, 0.5, 0.25)
+    # 4 ms is the step the single-asset and imported-scene entrances actually run at. It was
+    # missing, so those entrances had no rung to move to when a numerics-coupled criterion
+    # failed. Added rather than substituted: the existing rungs keep their meaning and the
+    # evidence recorded against them stays comparable.
+    for dt in (4.0, 2.0, 1.0, 0.5, 0.25)
     for mode in ("authored", "standard")
-    for tau in (10, 20)
+    # 50 ms is the softest rung, and the one where the measured contact dropout goes to
+    # zero. Without it the sweep only ever sampled the stiff side of the stability floor,
+    # so a scan could not distinguish a bad scene from a contact solve on its edge.
+    for tau in (10, 20, 50)
 }
 PROFILES = ("legacy", *_REGISTRY)
-CANDIDATE_PROFILES = tuple(_REGISTRY)[:12]
+# Repair's search space, unchanged: the step sizes this entrance was characterised on. The
+# 4 ms rungs above are addressable by name for the entrances that run there, but they are
+# deliberately not candidates here -- widening repair's search is a separate decision from
+# giving another entrance a rung to stand on.
+CANDIDATE_PROFILES = tuple(n for n, c in _REGISTRY.items() if 0.0005 <= c["dt"] <= 0.002)
 
 
 def configuration(profile="legacy"):
     if profile not in PROFILES:
         raise ValueError("unknown numerics profile")
     return {} if profile == "legacy" else copy.deepcopy(_REGISTRY[profile])
+
+
+# The span the registry itself characterises. A proposal may interpolate inside it; nothing
+# outside has ever been measured here, so extrapolation is refused rather than trusted.
+DT_BOUNDS = (min(c["dt"] for c in _REGISTRY.values()), max(c["dt"] for c in _REGISTRY.values()))
+TIMECONST_MAX = 0.1
+
+
+# Keys that say how the contact solve behaves, as opposed to how long the run is and where
+# its window sits. A registry entry carries both because repair owns its own schedule; an
+# entrance with its own run length wants only these.
+SOLVER_KEYS = ("dt", "constraint_timeconst", "contact_solref", "contact_solimp")
+
+
+def as_override(cfg):
+    """The solver half of a configuration, for an entrance that keeps its own schedule.
+
+    Passing a whole registry entry as an override would silently import repair's 3 s run
+    and its window placement, changing what a 4 s entrance is measuring while appearing to
+    change only contact stiffness.
+    """
+    return {k: cfg[k] for k in SOLVER_KEYS if k in cfg}
+
+
+def synthesize(dt, constraint_timeconst, mode="authored"):
+    """Build an unregistered configuration, shaped and fingerprinted like a registered one.
+
+    A search that may propose its own values still has to leave reproducible evidence, so
+    the combination is content-hashed and marked by origin. `verify_evidence` refuses an
+    agent-proposed configuration as an asset's qualifying evidence for exactly that reason:
+    a one-off tuning that happened to pass is not the versioned test downstream asks for.
+    """
+    if mode not in ("authored", "standard"):
+        raise ValueError("unknown contact parameter mode")
+    for label, value in (("dt", dt), ("constraint_timeconst", constraint_timeconst)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{label} must be a number")
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{label} must be finite and positive")
+    if not DT_BOUNDS[0] <= dt <= DT_BOUNDS[1]:
+        raise ValueError(f"dt {dt} is outside the characterised range {DT_BOUNDS}")
+    if constraint_timeconst > TIMECONST_MAX:
+        raise ValueError(f"constraint_timeconst {constraint_timeconst} exceeds {TIMECONST_MAX}")
+    dt, tau = float(dt), float(constraint_timeconst)
+    cfg = dict(
+        dt=dt,
+        steps=round(3.0 / dt),
+        substeps=1,
+        window_start_s=2.0,
+        window_samples=round(1.0 / dt),
+        constraint_timeconst=tau,
+        contact_solref=[tau, 1.0],
+        contact_solimp=None if mode == "authored" else list(STANDARD_SOLIMP),
+        max_collision_pairs=1024,
+        max_contacts=4096,
+    )
+    digest = hashlib.sha256(
+        json.dumps(cfg, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    registered = next(
+        (n for n, c in _REGISTRY.items() if {k: c[k] for k in cfg} == cfg),
+        None,
+    )
+    cfg.update(
+        numerics_profile=registered or f"adhoc_{digest[:12]}",
+        numerics_digest=digest,
+        # A proposal that lands exactly on a registered rung is that rung, and keeps its
+        # standing; only genuinely new combinations carry the weaker origin.
+        numerics_origin="registered" if registered else "agent_proposed",
+    )
+    return cfg
 
 
 def half_dt_profile(profile):
